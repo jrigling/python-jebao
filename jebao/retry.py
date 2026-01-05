@@ -46,13 +46,35 @@ def async_retry(
                         )
                         raise
 
-                    # Check if error message indicates garbage issue
+                    # Check if error message indicates specific issues
                     error_msg = str(e).lower()
                     is_garbage_issue = (
                         "synchronization" in error_msg
                         or "garbage" in error_msg
                         or "invalid header" in error_msg
                     )
+                    is_not_connected = "not connected" in error_msg or "connection closed" in error_msg
+
+                    # Attempt reconnection if disconnected
+                    if is_not_connected and args and hasattr(args[0], 'connect'):
+                        device = args[0]
+                        # Check if device has is_connected property
+                        if hasattr(device, 'is_connected') and not device.is_connected:
+                            _LOGGER.info(
+                                f"{func.__name__} attempt {attempt}/{max_attempts}: "
+                                f"Connection lost, attempting to reconnect..."
+                            )
+                            try:
+                                await device.connect()
+                                _LOGGER.info("Reconnected successfully, retrying operation")
+                                # Don't sleep after successful reconnection - retry immediately
+                                attempt += 1
+                                continue
+                            except Exception as reconnect_err:
+                                _LOGGER.warning(
+                                    f"Reconnection failed: {reconnect_err}, "
+                                    f"will retry in {current_delay}s"
+                                )
 
                     if is_garbage_issue:
                         _LOGGER.warning(
