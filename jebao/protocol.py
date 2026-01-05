@@ -363,9 +363,9 @@ class JebaoProtocol:
         if not self.is_connected:
             raise JebaoConnectionError("Not connected")
 
-        # Drain any garbage bytes left from previous operations
-        # This prevents garbage from corrupting the status response read
-        await self._drain_garbage_bytes(timeout=0.05)
+        # Drain any unexpected leftover bytes as safety net (very short timeout)
+        # Normally padding is read explicitly, but this catches edge cases
+        await self._drain_garbage_bytes(timeout=0.01)
 
         # Send simple status request (0x90)
         # Format: 00 00 00 03 04 00 00 90 02
@@ -419,9 +419,9 @@ class JebaoProtocol:
         if not self.is_connected:
             raise JebaoConnectionError("Not connected")
 
-        # Drain any garbage bytes left from previous operations
-        # This prevents garbage from corrupting the ACK read
-        await self._drain_garbage_bytes(timeout=0.05)
+        # Drain any unexpected leftover bytes as safety net (very short timeout)
+        # Normally padding is read explicitly, but this catches edge cases
+        await self._drain_garbage_bytes(timeout=0.01)
 
         command = self._build_control_command(opcode1, opcode2, param1, param2)
         _LOGGER.debug(
@@ -449,8 +449,6 @@ class JebaoProtocol:
                     "Pump sent unsolicited status update after control command: type=0x%02x",
                     status_type,
                 )
-                # Drain any remaining garbage after the status update
-                await self._drain_garbage_bytes()
             except asyncio.TimeoutError:
                 # No status update sent, that's OK
                 _LOGGER.debug("No unsolicited status update after control command")
@@ -643,6 +641,43 @@ class JebaoProtocol:
 
                 result = header + remaining
                 msg_type = result[7] if len(result) > 7 else 0
+
+                # Only message type 0x00 (extended status responses) has 129-byte padding
+                # All other message types have no padding
+                if msg_type == MSG_EXTENDED_DATA:
+                    # Read fixed padding (129 bytes) that pump sends for extended responses
+                    # The pump uses fixed-frame protocol with padding (0xee or 0x00)
+                    padding = await self._reader.readexactly(129)
+
+                    # Validate padding - should be mostly 0xee or 0x00 patterns
+                    # Check first 4 bytes and last byte
+                    padding_start = padding[0:4]
+                    padding_end = padding[-1]
+
+                    # Valid patterns: eeeeeeee or 00000000 at start, 00 at end
+                    is_valid_padding = (
+                        (padding_start == b'\xee\xee\xee\xee' or padding_start == b'\x00\x00\x00\x00')
+                        and padding_end == 0x00
+                    )
+
+                    if not is_valid_padding:
+                        _LOGGER.error(
+                            "Invalid padding detected! Start: %s, End: 0x%02x - possible protocol corruption",
+                            padding_start.hex(),
+                            padding_end
+                        )
+                        # Drain any additional garbage as fallback
+                        await self._drain_garbage_bytes(timeout=0.05)
+                        raise JebaoConnectionError(
+                            f"Protocol error: invalid padding (start={padding_start.hex()}, end=0x{padding_end:02x})"
+                        )
+
+                    _LOGGER.debug(
+                        "Read 129-byte padding frame for msg type 0x00 (start: %s, end: 0x%02x)",
+                        padding_start.hex(),
+                        padding_end
+                    )
+
                 _LOGGER.debug(
                     f"Message complete: {len(result)} bytes, type=0x{msg_type:02x}"
                 )
