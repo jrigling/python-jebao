@@ -41,8 +41,11 @@ def async_retry(
                     return await func(*args, **kwargs)
                 except exceptions as e:
                     if attempt == max_attempts:
+                        device_id = ""
+                        if args and hasattr(args[0], 'device_identifier'):
+                            device_id = args[0].device_identifier + " "
                         _LOGGER.error(
-                            f"{func.__name__} failed after {max_attempts} attempts: {e}"
+                            f"{device_id}{func.__name__} failed after {max_attempts} attempts: {e}"
                         )
                         raise
 
@@ -60,30 +63,35 @@ def async_retry(
                         device = args[0]
                         # Check if device has is_connected property
                         if hasattr(device, 'is_connected') and not device.is_connected:
+                            device_id = device.device_identifier if hasattr(device, 'device_identifier') else ""
                             _LOGGER.info(
-                                f"{func.__name__} attempt {attempt}/{max_attempts}: "
+                                f"{device_id} {func.__name__} attempt {attempt}/{max_attempts}: "
                                 f"Connection lost, attempting to reconnect..."
                             )
                             try:
                                 await device.connect()
-                                _LOGGER.info("Reconnected successfully, retrying operation")
+                                _LOGGER.info(f"{device_id} Reconnected successfully, retrying operation")
                                 # Don't sleep after successful reconnection - retry immediately
                                 attempt += 1
                                 continue
                             except Exception as reconnect_err:
                                 _LOGGER.warning(
-                                    f"Reconnection failed: {reconnect_err}, "
+                                    f"{device_id} Reconnection failed: {reconnect_err}, "
                                     f"will retry in {current_delay}s"
                                 )
 
+                    device_id = ""
+                    if args and hasattr(args[0], 'device_identifier'):
+                        device_id = args[0].device_identifier + " "
+
                     if is_garbage_issue:
                         _LOGGER.warning(
-                            f"{func.__name__} attempt {attempt}/{max_attempts} failed "
+                            f"{device_id}{func.__name__} attempt {attempt}/{max_attempts} failed "
                             f"due to garbage bytes, retrying in {current_delay}s: {e}"
                         )
                     else:
                         _LOGGER.warning(
-                            f"{func.__name__} attempt {attempt}/{max_attempts} failed, "
+                            f"{device_id}{func.__name__} attempt {attempt}/{max_attempts} failed, "
                             f"retrying in {current_delay}s: {e}"
                         )
 

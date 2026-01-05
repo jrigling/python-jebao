@@ -34,10 +34,17 @@ class JebaoDevice:
         self.device_id = device_id
         self.model = model
 
-        self._protocol = JebaoProtocol(host, port)
+        self._protocol = JebaoProtocol(host, port, device_id=device_id)
         self._state: Optional[DeviceState] = None
         self._speed: Optional[int] = None
         self._last_update: Optional[float] = None
+
+    @property
+    def device_identifier(self) -> str:
+        """Get device identifier for logging."""
+        if self.device_id:
+            return f"[{self.device_id}]"
+        return f"[{self.host}]"
 
     @property
     def is_connected(self) -> bool:
@@ -90,7 +97,7 @@ class JebaoDevice:
             JebaoAuthenticationError: Authentication failed
         """
         await self._protocol.connect(timeout)
-        _LOGGER.info("Connected to %s (%s)", self.host, self.model or "Unknown")
+        _LOGGER.info("%s Connected (%s)", self.device_identifier, self.model or "Unknown")
 
         # Get initial status
         await self.update()
@@ -98,7 +105,7 @@ class JebaoDevice:
     async def disconnect(self) -> None:
         """Disconnect from device."""
         await self._protocol.disconnect()
-        _LOGGER.info("Disconnected from %s", self.host)
+        _LOGGER.info("%s Disconnected", self.device_identifier)
 
     @async_retry(max_attempts=3, delay=0.5)
     async def update(self, timeout: float = DEFAULT_TIMEOUT) -> None:
@@ -124,12 +131,13 @@ class JebaoDevice:
             self._speed = status["speed"]
             self._last_update = time.time()
             _LOGGER.debug(
-                "Status updated: state=%s, speed=%d%%",
+                "%s Status updated: state=%s, speed=%d%%",
+                self.device_identifier,
                 self._state.name,
                 self._speed,
             )
         else:
-            _LOGGER.warning("Failed to parse status response")
+            _LOGGER.warning("%s Failed to parse status response", self.device_identifier)
 
     async def __aenter__(self):
         """Async context manager entry."""

@@ -90,7 +90,7 @@ class MDP20000Device(JebaoDevice):
             This method automatically retries up to 3 times on transient
             failures (garbage bytes, connection issues).
         """
-        _LOGGER.info("Turning on pump")
+        _LOGGER.info("%s Turning on pump", self.device_identifier)
 
         await self._protocol.send_control_command(
             CommandOpcode.TURN_ON_OFF,
@@ -115,7 +115,7 @@ class MDP20000Device(JebaoDevice):
             This method automatically retries up to 3 times on transient
             failures (garbage bytes, connection issues).
         """
-        _LOGGER.info("Turning off pump")
+        _LOGGER.info("%s Turning off pump", self.device_identifier)
 
         await self._protocol.send_control_command(
             CommandOpcode.TURN_ON_OFF,
@@ -148,7 +148,7 @@ class MDP20000Device(JebaoDevice):
                 f"Speed must be between {MIN_SPEED} and {MAX_SPEED}, got {percentage}"
             )
 
-        _LOGGER.info("Setting speed to %d%%", percentage)
+        _LOGGER.info("%s Setting speed to %d%%", self.device_identifier, percentage)
 
         await self._protocol.send_control_command(
             CommandOpcode.SET_SPEED,

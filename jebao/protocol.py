@@ -41,15 +41,17 @@ MSG_EXTENDED_DATA = 0x00
 class JebaoProtocol:
     """Low-level protocol implementation for Jebao devices."""
 
-    def __init__(self, host: str, port: int = 12416):
+    def __init__(self, host: str, port: int = 12416, device_id: Optional[str] = None):
         """Initialize protocol handler.
 
         Args:
             host: Device IP address
             port: TCP port (default 12416)
+            device_id: Device ID for logging (optional)
         """
         self.host = host
         self.port = port
+        self.device_id = device_id
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._sequence = 1
@@ -69,6 +71,13 @@ class JebaoProtocol:
         self._read_buffer = bytearray()
 
     @property
+    def device_identifier(self) -> str:
+        """Get device identifier for logging."""
+        if self.device_id:
+            return f"[{self.device_id}]"
+        return f"[{self.host}]"
+
+    @property
     def is_connected(self) -> bool:
         """Check if connection is established."""
         return self._writer is not None and not self._writer.is_closing()
@@ -85,7 +94,7 @@ class JebaoProtocol:
             JebaoTimeoutError: Operation timed out
         """
         try:
-            _LOGGER.debug("Connecting to %s:%d", self.host, self.port)
+            _LOGGER.debug("%s Connecting to %s:%d", self.device_identifier, self.host, self.port)
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port), timeout=timeout
             )
@@ -117,7 +126,7 @@ class JebaoProtocol:
         Raises:
             JebaoAuthenticationError: Authentication failed
         """
-        _LOGGER.debug("Starting authentication")
+        _LOGGER.debug("%s Starting authentication", self.device_identifier)
 
         # Step 1: Request passcode
         request = self._build_passcode_request()
@@ -161,7 +170,7 @@ class JebaoProtocol:
             _LOGGER.error(f"Login failed - expected type 0x{MSG_LOGIN_SUCCESS:02x} at byte 7, got 0x{response[7]:02x}")
             raise JebaoAuthenticationError("Login failed")
 
-        _LOGGER.info("Authentication successful for %s", self.host)
+        _LOGGER.info("%s Authentication successful", self.device_identifier)
 
     async def disconnect(self) -> None:
         """Disconnect from device."""
@@ -188,7 +197,7 @@ class JebaoProtocol:
                 self._writer = None
                 self._reader = None
 
-        _LOGGER.debug("Disconnected from %s", self.host)
+        _LOGGER.debug("%s Disconnected", self.device_identifier)
 
     def _start_keepalive(self) -> None:
         """Start keepalive task."""
@@ -432,7 +441,8 @@ class JebaoProtocol:
 
             command = self._build_control_command(opcode1, opcode2, param1, param2)
             _LOGGER.debug(
-                "Sending control command: opcode1=0x%02x, opcode2=0x%02x, param1=%d, param2=%d",
+                "%s Sending control command: opcode1=0x%02x, opcode2=0x%02x, param1=%d, param2=%d",
+                self.device_identifier,
                 opcode1,
                 opcode2,
                 param1,
@@ -692,7 +702,7 @@ class JebaoProtocol:
                 )
                 return result
             except asyncio.IncompleteReadError as err:
-                _LOGGER.error("IncompleteReadError - connection closed by peer")
+                _LOGGER.error("%s IncompleteReadError - connection closed by peer", self.device_identifier)
                 # Mark connection as closed so reconnection can happen
                 await self.disconnect()
                 raise JebaoConnectionError("Connection closed") from err
