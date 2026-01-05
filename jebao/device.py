@@ -6,6 +6,7 @@ from typing import Optional
 from .const import DEFAULT_TIMEOUT, DeviceState
 from .exceptions import JebaoConnectionError
 from .protocol import JebaoProtocol
+from .retry import async_retry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class JebaoDevice:
         await self._protocol.disconnect()
         _LOGGER.info("Disconnected from %s", self.host)
 
+    @async_retry(max_attempts=3, delay=0.5)
     async def update(self, timeout: float = DEFAULT_TIMEOUT) -> None:
         """Update device status.
 

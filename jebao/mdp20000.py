@@ -40,6 +40,7 @@ class MDP20000Device(JebaoDevice):
         super().__init__(host, port, device_id, MODEL_MDP20000)
         self._feed_duration: int = 1  # Last configured feed duration
 
+    @async_retry(max_attempts=3, delay=0.5)
     async def ensure_manual_mode(self, timeout: float = COMMAND_TIMEOUT) -> None:
         """Ensure device is in manual mode.
 
