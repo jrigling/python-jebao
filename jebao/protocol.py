@@ -582,6 +582,8 @@ class JebaoProtocol:
             self._writer.write(data)
             await self._writer.drain()
         except Exception as err:
+            _LOGGER.error("Send failed, closing connection: %s", err)
+            await self.disconnect()
             raise JebaoConnectionError(f"Send failed: {err}") from err
 
     async def _read_raw(self) -> bytes:
@@ -684,6 +686,8 @@ class JebaoProtocol:
                 return result
             except asyncio.IncompleteReadError as err:
                 _LOGGER.error("IncompleteReadError - connection closed by peer")
+                # Mark connection as closed so reconnection can happen
+                await self.disconnect()
                 raise JebaoConnectionError("Connection closed") from err
             except JebaoConnectionError:
                 raise
