@@ -55,7 +55,10 @@ class JebaoProtocol:
         self._sequence = 1
         self._keepalive_task: Optional[asyncio.Task] = None
         self._passcode: Optional[bytes] = None
-        self._read_lock = asyncio.Lock()
+
+        # Locks for thread-safe operation
+        self._request_lock = asyncio.Lock()  # Serialize entire request-response cycles
+        self._read_lock = asyncio.Lock()     # Low-level read serialization
 
         # Message dispatcher
         self._message_queues: Dict[int, asyncio.Queue] = {}
@@ -360,39 +363,41 @@ class JebaoProtocol:
             JebaoConnectionError: Not connected
             JebaoTimeoutError: Request timed out
         """
-        if not self.is_connected:
-            raise JebaoConnectionError("Not connected")
+        # Serialize requests - only one operation at a time
+        async with self._request_lock:
+            if not self.is_connected:
+                raise JebaoConnectionError("Not connected")
 
-        # Drain any unexpected leftover bytes as safety net (very short timeout)
-        # Normally padding is read explicitly, but this catches edge cases
-        await self._drain_garbage_bytes(timeout=0.01)
+            # Drain any unexpected leftover bytes as safety net (very short timeout)
+            # Normally padding is read explicitly, but this catches edge cases
+            await self._drain_garbage_bytes(timeout=0.01)
 
-        # Send simple status request (0x90)
-        # Format: 00 00 00 03 04 00 00 90 02
-        # The last byte (02) requests values, and response will be message type 91 or 0x00
-        request = bytes.fromhex("0000000304000090 02")
-        _LOGGER.debug(f"Sending status request: {request.hex()}")
-        await self._send_raw(request)
-        _LOGGER.debug("Status request sent, waiting for response...")
+            # Send simple status request (0x90)
+            # Format: 00 00 00 03 04 00 00 90 02
+            # The last byte (02) requests values, and response will be message type 91 or 0x00
+            request = bytes.fromhex("0000000304000090 02")
+            _LOGGER.debug(f"Sending status request: {request.hex()}")
+            await self._send_raw(request)
+            _LOGGER.debug("Status request sent, waiting for response...")
 
-        # Read response directly (no dispatcher)
-        try:
-            response = await asyncio.wait_for(self._read_raw(), timeout=timeout)
-        except asyncio.TimeoutError as err:
-            raise JebaoTimeoutError("Status request timed out") from err
+            # Read response directly (no dispatcher)
+            try:
+                response = await asyncio.wait_for(self._read_raw(), timeout=timeout)
+            except asyncio.TimeoutError as err:
+                raise JebaoTimeoutError("Status request timed out") from err
 
-        _LOGGER.debug(f"Status response length: {len(response)}, data: {response.hex()[:100]}...")
+            _LOGGER.debug(f"Status response length: {len(response)}, data: {response.hex()[:100]}...")
 
-        # Note: Don't drain here - pump may send unsolicited updates that we shouldn't consume
+            # Note: Don't drain here - pump may send unsolicited updates that we shouldn't consume
 
-        if len(response) < 10:
-            raise JebaoCommandError(f"Invalid status response: too short ({len(response)} bytes)")
+            if len(response) < 10:
+                raise JebaoCommandError(f"Invalid status response: too short ({len(response)} bytes)")
 
-        # Log the message type and first few bytes for debugging
-        msg_type = response[7] if len(response) > 7 else 0
-        _LOGGER.debug(f"Status response type: 0x{msg_type:02x}, bytes 10-12: {response[10:12].hex() if len(response) > 11 else 'N/A'}")
+            # Log the message type and first few bytes for debugging
+            msg_type = response[7] if len(response) > 7 else 0
+            _LOGGER.debug(f"Status response type: 0x{msg_type:02x}, bytes 10-12: {response[10:12].hex() if len(response) > 11 else 'N/A'}")
 
-        return response
+            return response
 
     async def send_control_command(
         self,
@@ -416,46 +421,48 @@ class JebaoProtocol:
             JebaoCommandError: Command failed
             JebaoTimeoutError: Command timed out
         """
-        if not self.is_connected:
-            raise JebaoConnectionError("Not connected")
+        # Serialize requests - only one operation at a time
+        async with self._request_lock:
+            if not self.is_connected:
+                raise JebaoConnectionError("Not connected")
 
-        # Drain any unexpected leftover bytes as safety net (very short timeout)
-        # Normally padding is read explicitly, but this catches edge cases
-        await self._drain_garbage_bytes(timeout=0.01)
+            # Drain any unexpected leftover bytes as safety net (very short timeout)
+            # Normally padding is read explicitly, but this catches edge cases
+            await self._drain_garbage_bytes(timeout=0.01)
 
-        command = self._build_control_command(opcode1, opcode2, param1, param2)
-        _LOGGER.debug(
-            "Sending control command: opcode1=0x%02x, opcode2=0x%02x, param1=%d, param2=%d",
-            opcode1,
-            opcode2,
-            param1,
-            param2,
-        )
-        await self._send_raw(command)
+            command = self._build_control_command(opcode1, opcode2, param1, param2)
+            _LOGGER.debug(
+                "Sending control command: opcode1=0x%02x, opcode2=0x%02x, param1=%d, param2=%d",
+                opcode1,
+                opcode2,
+                param1,
+                param2,
+            )
+            await self._send_raw(command)
 
-        # Read ACK (message type 0x94) directly
-        # The pump sends an ACK for control commands
-        try:
-            ack = await asyncio.wait_for(self._read_raw(), timeout=timeout)
-            ack_type = ack[7] if len(ack) > 7 else 0
-            _LOGGER.debug("Control command ACK received: type=0x%02x, %d bytes", ack_type, len(ack))
-
-            # After ACK, pump may send unsolicited status update
-            # Try to read it with short timeout
+            # Read ACK (message type 0x94) directly
+            # The pump sends an ACK for control commands
             try:
-                status_update = await asyncio.wait_for(self._read_raw(), timeout=0.5)
-                status_type = status_update[7] if len(status_update) > 7 else 0
-                _LOGGER.info(
-                    "Pump sent unsolicited status update after control command: type=0x%02x",
-                    status_type,
-                )
-            except asyncio.TimeoutError:
-                # No status update sent, that's OK
-                _LOGGER.debug("No unsolicited status update after control command")
+                ack = await asyncio.wait_for(self._read_raw(), timeout=timeout)
+                ack_type = ack[7] if len(ack) > 7 else 0
+                _LOGGER.debug("Control command ACK received: type=0x%02x, %d bytes", ack_type, len(ack))
 
-        except asyncio.TimeoutError:
-            _LOGGER.warning("Control command sent but no ACK received (pump may still process it)")
-            # Don't raise - pump may still process the command even without ACK
+                # After ACK, pump may send unsolicited status update
+                # Try to read it with short timeout
+                try:
+                    status_update = await asyncio.wait_for(self._read_raw(), timeout=0.5)
+                    status_type = status_update[7] if len(status_update) > 7 else 0
+                    _LOGGER.info(
+                        "Pump sent unsolicited status update after control command: type=0x%02x",
+                        status_type,
+                    )
+                except asyncio.TimeoutError:
+                    # No status update sent, that's OK
+                    _LOGGER.debug("No unsolicited status update after control command")
+
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Control command sent but no ACK received (pump may still process it)")
+                # Don't raise - pump may still process the command even without ACK
 
     def _build_control_command(
         self, opcode1: int, opcode2: int, param1: int, param2: int
