@@ -363,6 +363,10 @@ class JebaoProtocol:
         if not self.is_connected:
             raise JebaoConnectionError("Not connected")
 
+        # Drain any garbage bytes left from previous operations
+        # This prevents garbage from corrupting the status response read
+        await self._drain_garbage_bytes(timeout=0.05)
+
         # Send simple status request (0x90)
         # Format: 00 00 00 03 04 00 00 90 02
         # The last byte (02) requests values, and response will be message type 91 or 0x00
@@ -606,10 +610,17 @@ class JebaoProtocol:
                 for attempt in range(max_resync_attempts):
                     if header[0:4] == b"\x00\x00\x00\x03":
                         # Valid header found
+                        if attempt > 0:
+                            # Log when we had to re-sync (shouldn't happen often now)
+                            _LOGGER.warning(
+                                "Had to re-sync message stream after %d attempt(s) - "
+                                "garbage bytes not properly drained",
+                                attempt
+                            )
                         break
 
                     # Invalid header - try to re-sync by reading one more byte
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "Invalid header %s, attempting re-sync (attempt %d/%d)",
                         header[0:4].hex(),
                         attempt + 1,
