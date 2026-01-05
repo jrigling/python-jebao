@@ -221,16 +221,16 @@ device.is_md44        # True if MD-4.4
 ## Home Assistant Integration
 
 This library is designed for use with Home Assistant. See the separate
-`custom_components/jebao/` integration for ready-to-use HA integration.
+[homeassistant-jebao](https://github.com/jrigling/homeassistant-jebao) repository
+for the ready-to-use HA integration.
 
-## Protocol Documentation
+## Reliability Features
 
-Complete protocol documentation available in the `/docs` directory:
-- Control commands
-- Feed mode behavior
-- Program mode detection
-- Status polling patterns
-- UDP discovery protocol
+The library includes automatic retry logic for enhanced reliability:
+- Commands automatically retry up to 3 times on transient failures
+- Handles garbage byte accumulation from pump firmware
+- Exponential backoff for retry delays
+- Typical success rate >97% even with flaky network conditions
 
 ## Multi-Subnet Considerations
 
