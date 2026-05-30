@@ -530,14 +530,19 @@ class JebaoProtocol:
         return bytes(buffer)
 
     async def _drain_garbage_bytes(self, timeout: float = 0.1) -> None:
-        """Drain any garbage/padding bytes from the socket buffer.
+        """Drain leftover bytes and unsolicited messages from the socket buffer.
 
-        The MDP-20000 pump appears to send extra padding bytes (0xee) after
-        valid responses. This method drains those bytes to prevent them from
-        corrupting subsequent reads.
+        The MDP-20000 pump emits two things we need to consume before a request:
+        - Padding bytes (0xee / 0x00) trailing some responses
+        - Unsolicited type 0x00 status broadcasts (header + body + 129-byte padding)
+
+        If an unsolicited type 0x00 frame is found and we only consume its body,
+        the trailing 129-byte padding remains in the buffer and corrupts the next
+        read (forcing a slow byte-by-byte resync that often races the pump's
+        connection close, surfacing as IncompleteReadError).
 
         Args:
-            timeout: How long to wait for garbage bytes (default 0.1s)
+            timeout: How long to wait for bytes (default 0.1s)
         """
         if not self._reader:
             return
@@ -559,20 +564,21 @@ class JebaoProtocol:
                         continue
                     # Check if it's a valid header
                     if header[0:4] == b"\x00\x00\x00\x03":
-                        # Valid header found - this is a real message!
-                        # Put it back somehow... actually, we can't put it back easily
-                        # This is a problem - we've consumed a valid message header
-                        _LOGGER.warning(
-                            "Found valid header while draining - this shouldn't happen! "
-                            "Pump may have sent unsolicited message."
-                        )
-                        # Read the rest of this message to consume it
+                        # Pump sent an unsolicited message (e.g. periodic status broadcast).
+                        # Consume the full frame so we don't desync the stream.
                         length = header[4]
-                        remaining = await self._reader.read(length)
-                        _LOGGER.warning(
-                            "Consumed unsolicited message: type=0x%02x, %d bytes total",
-                            header[7] if len(header) > 7 else 0,
-                            len(header) + len(remaining),
+                        body = await self._reader.readexactly(length)
+                        msg_type = body[2] if len(body) > 2 else 0
+                        total = len(header) + len(body)
+                        # Type 0x00 messages carry an extra 129-byte padding frame
+                        # (same as _read_raw). Skip it or stale bytes corrupt the next read.
+                        if msg_type == MSG_EXTENDED_DATA:
+                            padding = await self._reader.readexactly(129)
+                            total += len(padding)
+                        _LOGGER.debug(
+                            "Drained unsolicited message: type=0x%02x, %d bytes total",
+                            msg_type,
+                            total,
                         )
                     else:
                         # Garbage header - log and continue draining
