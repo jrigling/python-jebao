@@ -14,6 +14,7 @@ from .const import (
     COMMAND_TIMEOUT,
     CONTROL_COMMAND_SIZE,
     DEFAULT_TIMEOUT,
+    MD45_CHANNEL_COMMAND_SIZE,
     MSG_CONTROL_OR_EXTENDED_REQUEST,
     MSG_CONTROL_RESPONSE_OR_EXTENDED_DATA,
     MSG_DATA_REQUEST_SIMPLE,
@@ -508,6 +509,84 @@ class JebaoProtocol:
         buffer[24] = param2
 
         # Rest is zeros (already initialized)
+        return bytes(buffer)
+
+    async def send_channel_command(
+        self, channel: int, on: bool, timeout: float = COMMAND_TIMEOUT
+    ) -> None:
+        """Send a channel on/off command for MD-4.5-style 5-channel dosing pumps.
+
+        The MD-4.5 (a WiFi+BLE combo device, unlike the WiFi-only MDP-20000/
+        MD-4.4) uses a different frame layout for control commands: an
+        808-byte frame where the target channel is selected by a bitmask
+        (``1 << channel``) at payload offset 10, and - notably - the *same*
+        bitmask value (not a fixed 0x01) is written to the state byte at
+        offset 13 to turn it on; 0x00 turns it off. This was reverse
+        engineered from the pump's own cloud-relayed MQTT traffic (the
+        official app doesn't use this pump's local TCP port for control
+        despite the pump accepting connections on it), not derived from the
+        MD-4.4 command format, which this pump ignores.
+
+        Args:
+            channel: Channel number (1-5)
+            on: True to turn the channel on, False to turn it off
+            timeout: Command timeout
+
+        Raises:
+            JebaoConnectionError: Not connected
+            JebaoTimeoutError: Command timed out (raised only if this ever
+                needs to be strict; currently the ACK is best-effort, matching
+                send_control_command's behavior, since the pump doesn't
+                reliably ACK every command type)
+        """
+        async with self._request_lock:
+            if not self.is_connected:
+                raise JebaoConnectionError("Not connected")
+
+            await self._drain_garbage_bytes(timeout=0.01)
+
+            mask = 1 << channel
+            command = self._build_channel_command(mask, mask if on else 0x00)
+            _LOGGER.debug(
+                "%s Sending channel command: channel=%d mask=0x%02x state=0x%02x",
+                self.device_identifier,
+                channel,
+                mask,
+                mask if on else 0x00,
+            )
+            await self._send_raw(command)
+
+            try:
+                ack = await asyncio.wait_for(self._read_raw(), timeout=timeout)
+                ack_type = ack[7] if len(ack) > 7 else 0
+                _LOGGER.debug("Channel command ACK received: type=0x%02x, %d bytes", ack_type, len(ack))
+            except asyncio.TimeoutError:
+                _LOGGER.warning("Channel command sent but no ACK received (pump may still process it)")
+
+    def _build_channel_command(self, channel_mask: int, state: int) -> bytes:
+        """Build an MD-4.5 channel on/off command message.
+
+        Args:
+            channel_mask: Bitmask selecting the channel (1 << channel)
+            state: channel_mask to turn the channel on, 0x00 to turn it off
+
+        Returns:
+            808-byte command message
+        """
+        buffer = bytearray(MD45_CHANNEL_COMMAND_SIZE)
+
+        buffer[0:4] = b"\x00\x00\x00\x03"
+        buffer[4] = 0xA2
+        buffer[5] = 0x06
+
+        buffer[8] = MSG_CONTROL_OR_EXTENDED_REQUEST
+        buffer[9:13] = self._sequence.to_bytes(4, "big")
+        self._sequence += 1
+        buffer[13] = 0x01
+
+        buffer[18] = channel_mask
+        buffer[21] = state
+
         return bytes(buffer)
 
     @staticmethod

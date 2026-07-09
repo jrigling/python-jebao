@@ -32,10 +32,18 @@ CONTROL_COMMAND_SIZE = 323
 # Product keys
 PRODUCT_KEY_MDP20000 = "04020B28"
 PRODUCT_KEY_MD44 = "04020B27"  # Assumed, verify if needed
+PRODUCT_KEY_MD45 = "04X3000R"  # Confirmed via discovery response on real hardware
 
 # Model identifiers
 MODEL_MDP20000 = "MDP-20000"
 MODEL_MD44 = "MD-4.4"
+MODEL_MD45 = "MD-4.5"
+
+# MD-4.5 is a WiFi+BLE 5-channel dosing pump - a different device family from
+# the MDP-20000/MD-4.4 single-pump-with-speed model. It exposes 5 independent
+# on/off dosing channels instead of one variable-speed pump.
+MD45_NUM_CHANNELS = 5
+MD45_CHANNEL_COMMAND_SIZE = 808
 
 
 class DeviceState(IntEnum):
