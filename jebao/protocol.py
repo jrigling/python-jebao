@@ -544,7 +544,8 @@ class JebaoProtocol:
         Args:
             timeout: How long to wait for bytes (default 0.1s)
         """
-        if not self._reader:
+        reader = self._reader
+        if reader is None:
             return
 
         try:
@@ -553,7 +554,7 @@ class JebaoProtocol:
                 try:
                     # Try to read header of next message with short timeout
                     header = await asyncio.wait_for(
-                        self._reader.read(5), timeout=timeout
+                        reader.read(5), timeout=timeout
                     )
                     if not header:
                         # No more data
@@ -567,13 +568,13 @@ class JebaoProtocol:
                         # Pump sent an unsolicited message (e.g. periodic status broadcast).
                         # Consume the full frame so we don't desync the stream.
                         length = header[4]
-                        body = await self._reader.readexactly(length)
+                        body = await reader.readexactly(length)
                         msg_type = body[2] if len(body) > 2 else 0
                         total = len(header) + len(body)
                         # Type 0x00 messages carry an extra 129-byte padding frame
                         # (same as _read_raw). Skip it or stale bytes corrupt the next read.
                         if msg_type == MSG_EXTENDED_DATA:
-                            padding = await self._reader.readexactly(129)
+                            padding = await reader.readexactly(129)
                             total += len(padding)
                         _LOGGER.debug(
                             "Drained unsolicited message: type=0x%02x, %d bytes total",
@@ -618,15 +619,21 @@ class JebaoProtocol:
         Raises:
             JebaoConnectionError: Read failed
         """
-        if not self._reader:
-            raise JebaoConnectionError("Not connected")
-
         async with self._read_lock:
+            # Bind the reader locally under the lock. disconnect() (called from
+            # our own IncompleteReadError handler, from _send_raw's error path,
+            # and from the coordinator) sets self._reader = None from another
+            # task; re-reading self._reader across the awaits below would raise
+            # AttributeError. Reading from a captured, closed StreamReader raises
+            # IncompleteReadError/ConnectionResetError instead, which we handle.
+            reader = self._reader
+            if reader is None:
+                raise JebaoConnectionError("Not connected")
             try:
                 # Read header (4 bytes) + length byte (1 byte) = 5 bytes total
                 # Format: 00 00 00 03 [LENGTH]
                 _LOGGER.debug("Reading next message header...")
-                header = await self._reader.readexactly(5)
+                header = await reader.readexactly(5)
 
                 # Validate header - if invalid, try to re-sync
                 max_resync_attempts = 50
@@ -650,7 +657,7 @@ class JebaoProtocol:
                         max_resync_attempts,
                     )
                     # Shift header left by 1 byte and read 1 new byte
-                    next_byte = await self._reader.readexactly(1)
+                    next_byte = await reader.readexactly(1)
                     header = header[1:] + next_byte
                 else:
                     # Failed to re-sync after max attempts
@@ -662,7 +669,7 @@ class JebaoProtocol:
                 _LOGGER.debug(f"Valid header found, reading {length} more bytes")
 
                 # Read the remaining bytes based on length field
-                remaining = await self._reader.readexactly(length)
+                remaining = await reader.readexactly(length)
 
                 result = header + remaining
                 msg_type = result[7] if len(result) > 7 else 0
@@ -672,7 +679,7 @@ class JebaoProtocol:
                 if msg_type == MSG_EXTENDED_DATA:
                     # Read fixed padding (129 bytes) that pump sends for extended responses
                     # The pump uses fixed-frame protocol with padding (0xee or 0x00)
-                    padding = await self._reader.readexactly(129)
+                    padding = await reader.readexactly(129)
 
                     # Validate padding - should be mostly 0xee or 0x00 patterns
                     # Check first 4 bytes and last byte
@@ -707,8 +714,15 @@ class JebaoProtocol:
                     f"Message complete: {len(result)} bytes, type=0x{msg_type:02x}"
                 )
                 return result
-            except asyncio.IncompleteReadError as err:
-                _LOGGER.error("%s IncompleteReadError - connection closed by peer", self.device_identifier)
+            except (asyncio.IncompleteReadError, ConnectionResetError) as err:
+                # Expected when the pump drops an idle connection. The reconnect
+                # is logged by the coordinator/retry layer, so keep this at debug
+                # to avoid flooding the log every poll.
+                _LOGGER.debug(
+                    "%s Connection closed by peer (%s) - will reconnect",
+                    self.device_identifier,
+                    type(err).__name__,
+                )
                 # Mark connection as closed so reconnection can happen
                 await self.disconnect()
                 raise JebaoConnectionError("Connection closed") from err

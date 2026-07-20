@@ -31,7 +31,11 @@ CONTROL_COMMAND_SIZE = 323
 
 # Product keys
 PRODUCT_KEY_MDP20000 = "04020B28"
+PRODUCT_KEY_MDP20000_V2 = "04D30Q34"  # Newer MDP-20000 hardware revision
 PRODUCT_KEY_MD44 = "04020B27"  # Assumed, verify if needed
+
+# All known product keys that identify an MDP-20000 (across hardware revisions)
+PRODUCT_KEYS_MDP20000 = frozenset({PRODUCT_KEY_MDP20000, PRODUCT_KEY_MDP20000_V2})
 
 # Model identifiers
 MODEL_MDP20000 = "MDP-20000"

@@ -12,7 +12,7 @@ from .const import (
     MODEL_MD44,
     MODEL_MDP20000,
     PRODUCT_KEY_MD44,
-    PRODUCT_KEY_MDP20000,
+    PRODUCT_KEYS_MDP20000,
     UDP_DISCOVERY_PORT,
     UDP_LISTEN_PORT,
 )
@@ -357,7 +357,7 @@ class JebaoDiscovery:
             product_key = data[product_key_start : product_key_start + 8].rstrip(b"\x00").decode("ascii")
 
             # Determine model from product key
-            if product_key == PRODUCT_KEY_MDP20000:
+            if product_key in PRODUCT_KEYS_MDP20000:
                 model = MODEL_MDP20000
             elif product_key == PRODUCT_KEY_MD44:
                 model = MODEL_MD44
