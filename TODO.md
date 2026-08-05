@@ -24,10 +24,10 @@
 ## Other Future Tasks
 
 ### MD-4.4 Support
-- [ ] Port MD-4.4 control commands from Node.js library
-- [ ] Add MD44Device class
+- [x] Add verified MD-4.4 manual control and native schedule commands
+- [x] Add MD44Device class
 - [ ] Update Home Assistant integration for 4-channel pumps
-- [ ] Test with physical MD-4.4 hardware
+- [x] Test with physical MD-4.4 hardware (firmware 4.1.4)
 
 ### Documentation
 - [ ] Add protocol documentation

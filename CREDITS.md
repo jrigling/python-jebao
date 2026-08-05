@@ -1,5 +1,12 @@
 # Credits and Acknowledgments
 
+## MD-4.4 Physical Verification
+
+The 808-byte firmware 4.1.4 control frames, four-head selector maps, native
+schedule tables, and observed-state confirmation were independently verified
+against physical MD-4.4 hardware by the modREEF project and contributed under
+the project's MIT license. Test fixtures use sanitized identifiers.
+
 ## Original Work
 
 This library builds upon and extends the excellent work from:
