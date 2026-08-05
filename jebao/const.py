@@ -1,4 +1,5 @@
 """Constants for Jebao library."""
+
 from enum import IntEnum
 
 # Network ports
@@ -32,7 +33,10 @@ CONTROL_COMMAND_SIZE = 323
 # Product keys
 PRODUCT_KEY_MDP20000 = "04020B28"
 PRODUCT_KEY_MDP20000_V2 = "04D30Q34"  # Newer MDP-20000 hardware revision
-PRODUCT_KEY_MD44 = "04020B27"  # Assumed, verify if needed
+PRODUCT_KEY_MD44 = "04020B27"  # Older community-reported identifier
+PRODUCT_KEY_MD44_V2 = "1aa33c38ba9d4b78a9e7796705b2fad7"
+PRODUCT_KEYS_MD44 = frozenset({PRODUCT_KEY_MD44, PRODUCT_KEY_MD44_V2})
+MODULE_ID_MD44 = "04X3000R"
 
 # All known product keys that identify an MDP-20000 (across hardware revisions)
 PRODUCT_KEYS_MDP20000 = frozenset({PRODUCT_KEY_MDP20000, PRODUCT_KEY_MDP20000_V2})

@@ -1,26 +1,32 @@
 """Python library for controlling Jebao aquarium pumps."""
 
+from .const import (
+    MODEL_MD44,
+    MODEL_MDP20000,
+    DeviceState,
+)
 from .device import JebaoDevice
-from .mdp20000 import MDP20000Device
-from .discovery import JebaoDiscovery, DiscoveredDevice, discover_devices
+from .discovery import DiscoveredDevice, JebaoDiscovery, discover_devices
 from .exceptions import (
-    JebaoError,
-    JebaoConnectionError,
     JebaoAuthenticationError,
     JebaoCommandError,
+    JebaoConnectionError,
+    JebaoError,
     JebaoTimeoutError,
 )
-from .const import (
-    DeviceState,
-    MODEL_MDP20000,
-    MODEL_MD44,
-)
+from .md44 import MD44Channel, MD44Device
+from .md44_protocol import MD44Dose, MD44Status
+from .mdp20000 import MDP20000Device
 
 __version__ = "0.1.7"
 
 __all__ = [
     "JebaoDevice",
     "MDP20000Device",
+    "MD44Device",
+    "MD44Channel",
+    "MD44Dose",
+    "MD44Status",
     "JebaoDiscovery",
     "DiscoveredDevice",
     "discover_devices",

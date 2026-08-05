@@ -11,7 +11,8 @@ from .const import (
     DISCOVERY_TIMEOUT,
     MODEL_MD44,
     MODEL_MDP20000,
-    PRODUCT_KEY_MD44,
+    MODULE_ID_MD44,
+    PRODUCT_KEYS_MD44,
     PRODUCT_KEYS_MDP20000,
     UDP_DISCOVERY_PORT,
     UDP_LISTEN_PORT,
@@ -339,27 +340,30 @@ class JebaoDiscovery:
                 _LOGGER.debug("Invalid header")
                 return None
 
-            # Extract fields with length-prefixed parsing
-            # Device ID: 2-byte length at 8-9, then string data
-            device_id_length = int.from_bytes(data[8:10], "big")
-            device_id_start = 10
-            device_id_end = device_id_start + device_id_length
-            device_id = data[device_id_start:device_id_end].decode("ascii")
+            offset = 8
+            fields = []
+            for _ in range(4):
+                if offset + 2 > len(data) or data[offset] != 0:
+                    return None
+                length = data[offset + 1]
+                offset += 2
+                if offset + length > len(data):
+                    return None
+                fields.append(data[offset : offset + length])
+                offset += length
 
-            # MAC address follows device ID (6 bytes)
-            mac_start = device_id_end + 2  # Skip 2-byte separator
-            mac_bytes = data[mac_start : mac_start + 6]
+            device_id_bytes, mac_bytes, module_bytes, product_bytes = fields
+            if not device_id_bytes or len(mac_bytes) != 6 or not module_bytes:
+                return None
+            device_id = device_id_bytes.decode("ascii")
             mac_address = ":".join(f"{b:02x}" for b in mac_bytes)
-
-            # Product key is 8 bytes as ASCII, after device_id + MAC + separators
-            # After device_id (var len) + separator (2) + MAC (6) + separator (2)
-            product_key_start = device_id_end + 2 + 6 + 2
-            product_key = data[product_key_start : product_key_start + 8].rstrip(b"\x00").decode("ascii")
+            module_id = module_bytes.decode("ascii")
+            product_key = product_bytes.decode("ascii")
 
             # Determine model from product key
             if product_key in PRODUCT_KEYS_MDP20000:
                 model = MODEL_MDP20000
-            elif product_key == PRODUCT_KEY_MD44:
+            elif product_key in PRODUCT_KEYS_MD44 or module_id == MODULE_ID_MD44:
                 model = MODEL_MD44
             else:
                 _LOGGER.warning("Unknown product key: %s", product_key)
