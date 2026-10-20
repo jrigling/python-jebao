@@ -10,8 +10,11 @@ import netifaces
 from .const import (
     DISCOVERY_TIMEOUT,
     MODEL_MD44,
+    MODEL_MDP15000,
     MODEL_MDP20000,
+    MODELS_MDP20000_FAMILY,
     PRODUCT_KEY_MD44,
+    PRODUCT_KEY_MDP15000,
     PRODUCT_KEYS_MDP20000,
     UDP_DISCOVERY_PORT,
     UDP_LISTEN_PORT,
@@ -34,8 +37,8 @@ class DiscoveredDevice:
 
     @property
     def is_mdp20000(self) -> bool:
-        """Check if device is MDP-20000."""
-        return self.model == MODEL_MDP20000
+        """Check if device speaks the MDP-20000 protocol (MDP-20000, MDP-15000)."""
+        return self.model in MODELS_MDP20000_FAMILY
 
     @property
     def is_md44(self) -> bool:
@@ -359,6 +362,8 @@ class JebaoDiscovery:
             # Determine model from product key
             if product_key in PRODUCT_KEYS_MDP20000:
                 model = MODEL_MDP20000
+            elif product_key == PRODUCT_KEY_MDP15000:
+                model = MODEL_MDP15000
             elif product_key == PRODUCT_KEY_MD44:
                 model = MODEL_MD44
             else:

@@ -12,6 +12,7 @@ from .exceptions import (
 )
 from .const import (
     DeviceState,
+    MODEL_MDP15000,
     MODEL_MDP20000,
     MODEL_MD44,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "JebaoCommandError",
     "JebaoTimeoutError",
     "DeviceState",
+    "MODEL_MDP15000",
     "MODEL_MDP20000",
     "MODEL_MD44",
 ]

@@ -5,6 +5,7 @@ Python library for controlling Jebao aquarium pumps over local network.
 ## Supported Models
 
 - **MDP-20000**: Variable-speed circulation pump (30-100% speed control)
+- **MDP-15000**: Variable-speed circulation pump (same protocol as the MDP-20000)
 - **MD-4.4**: 4-channel dosing pump (planned)
 
 ## Features
