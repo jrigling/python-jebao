@@ -35,8 +35,9 @@ CONTROL_COMMAND_SIZE = 323
 
 # Product keys
 PRODUCT_KEY_MDP20000 = "04020B28"
-# Newer MDP-20000 hardware revision. MDP-15000s also report this key, so it doesn't
-# identify the model on its own (the discovery reply is otherwise identical).
+# Newer MDP-20000 hardware revision. MDP-15000s and MDP-3500s (homeassistant-jebao#2)
+# also report this key, so it doesn't identify the model on its own (the discovery
+# reply is otherwise identical).
 PRODUCT_KEY_MDP20000_V2 = "04D30Q34"
 PRODUCT_KEY_MD44 = "04020B27"  # Assumed, verify if needed
 PRODUCT_KEY_MDP15000 = "04D30Q37"  # MDP-15000; same protocol and status layout as the MDP-20000
