@@ -6,7 +6,14 @@ Python library for controlling Jebao aquarium pumps over local network.
 
 - **MDP-20000**: Variable-speed circulation pump (30-100% speed control)
 - **MDP-15000**: Variable-speed circulation pump (same protocol as the MDP-20000)
+- **MDP-3500**: Variable-speed circulation pump (same protocol; reported working in
+  [homeassistant-jebao#2](https://github.com/jrigling/homeassistant-jebao/issues/2))
+- **MDP-2500**: Likely the same protocol
+  ([homeassistant-jebao#1](https://github.com/jrigling/homeassistant-jebao/issues/1), unconfirmed)
 - **MD-4.4**: 4-channel dosing pump (planned)
+
+MDP-20000, MDP-15000 and MDP-3500 pumps can report the same product key (`04D30Q34`), so discovery
+labels them all MDP-20000. They all work with `MDP20000Device`.
 
 ## Features
 
