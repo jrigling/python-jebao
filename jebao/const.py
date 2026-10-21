@@ -35,9 +35,11 @@ CONTROL_COMMAND_SIZE = 323
 
 # Product keys
 PRODUCT_KEY_MDP20000 = "04020B28"
-PRODUCT_KEY_MDP20000_V2 = "04D30Q34"  # Newer MDP-20000 hardware revision
+# Newer MDP-20000 hardware revision. MDP-15000s also report this key, so it doesn't
+# identify the model on its own (the discovery reply is otherwise identical).
+PRODUCT_KEY_MDP20000_V2 = "04D30Q34"
 PRODUCT_KEY_MD44 = "04020B27"  # Assumed, verify if needed
-PRODUCT_KEY_MDP15000 = "04D30Q37"  # Same protocol and status layout as the MDP-20000
+PRODUCT_KEY_MDP15000 = "04D30Q37"  # MDP-15000; same protocol and status layout as the MDP-20000
 
 # All known product keys that identify an MDP-20000 (across hardware revisions)
 PRODUCT_KEYS_MDP20000 = frozenset({PRODUCT_KEY_MDP20000, PRODUCT_KEY_MDP20000_V2})
