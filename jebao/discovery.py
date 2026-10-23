@@ -10,8 +10,11 @@ import netifaces
 from .const import (
     DISCOVERY_TIMEOUT,
     MODEL_MD44,
+    MODEL_MDP15000,
     MODEL_MDP20000,
+    MODELS_MDP20000_FAMILY,
     PRODUCT_KEY_MD44,
+    PRODUCT_KEY_MDP15000,
     PRODUCT_KEYS_MDP20000,
     UDP_DISCOVERY_PORT,
     UDP_LISTEN_PORT,
@@ -31,11 +34,17 @@ class DiscoveredDevice:
     ip_address: str
     model: str
     firmware_version: Optional[str] = None
+    # The GizWits product key proper (32 hex chars). All MDP-15000/MDP-3500/newer
+    # MDP-20000 pumps report 6a5c47b3ea364ecb841b47f5997a1775, whose datapoints are
+    # described in datapoints.py. (`product_key` above is the 8-character field
+    # before it, which GizWits defines as the Wi-Fi module firmware version; it's
+    # kept under its old name because models were told apart by it.)
+    gizwits_product_key: Optional[str] = None
 
     @property
     def is_mdp20000(self) -> bool:
-        """Check if device is MDP-20000."""
-        return self.model == MODEL_MDP20000
+        """Check if device speaks the MDP-20000 protocol (MDP-20000, MDP-15000)."""
+        return self.model in MODELS_MDP20000_FAMILY
 
     @property
     def is_md44(self) -> bool:
@@ -339,26 +348,37 @@ class JebaoDiscovery:
                 _LOGGER.debug("Invalid header")
                 return None
 
-            # Extract fields with length-prefixed parsing
-            # Device ID: 2-byte length at 8-9, then string data
-            device_id_length = int.from_bytes(data[8:10], "big")
-            device_id_start = 10
-            device_id_end = device_id_start + device_id_length
-            device_id = data[device_id_start:device_id_end].decode("ascii")
+            # Content after the 8-byte header: length-prefixed (2 bytes, big endian)
+            # device ID, MAC (6 bytes), Wi-Fi module firmware version (8 chars,
+            # historically treated as the product key), and product key (32 chars)
+            fields = []
+            pos = 8
+            while len(fields) < 4 and pos + 2 <= len(data):
+                length = int.from_bytes(data[pos : pos + 2], "big")
+                pos += 2
+                if pos + length > len(data):
+                    break
+                fields.append(data[pos : pos + length])
+                pos += length
+            if len(fields) < 3:
+                _LOGGER.debug("Truncated discovery response")
+                return None
 
-            # MAC address follows device ID (6 bytes)
-            mac_start = device_id_end + 2  # Skip 2-byte separator
-            mac_bytes = data[mac_start : mac_start + 6]
-            mac_address = ":".join(f"{b:02x}" for b in mac_bytes)
-
-            # Product key is 8 bytes as ASCII, after device_id + MAC + separators
-            # After device_id (var len) + separator (2) + MAC (6) + separator (2)
-            product_key_start = device_id_end + 2 + 6 + 2
-            product_key = data[product_key_start : product_key_start + 8].rstrip(b"\x00").decode("ascii")
+            device_id = fields[0].decode("ascii")
+            mac = fields[1]
+            if len(mac) == 12:  # some modules send the MAC as hex text
+                mac = bytes.fromhex(mac.decode("ascii"))
+            mac_address = ":".join(f"{b:02x}" for b in mac[:6])
+            product_key = fields[2].rstrip(b"\x00").decode("ascii")
+            gizwits_product_key = (
+                fields[3].rstrip(b"\x00").decode("ascii", "replace") if len(fields) > 3 else None
+            )
 
             # Determine model from product key
             if product_key in PRODUCT_KEYS_MDP20000:
                 model = MODEL_MDP20000
+            elif product_key == PRODUCT_KEY_MDP15000:
+                model = MODEL_MDP15000
             elif product_key == PRODUCT_KEY_MD44:
                 model = MODEL_MD44
             else:
@@ -371,6 +391,8 @@ class JebaoDiscovery:
                 product_key=product_key,
                 ip_address=ip_address,
                 model=model,
+                firmware_version=product_key,
+                gizwits_product_key=gizwits_product_key or None,
             )
 
         except Exception as err:
@@ -397,3 +419,43 @@ async def discover_devices(
     """
     discovery = JebaoDiscovery()
     return await discovery.discover(timeout=timeout, interfaces=interfaces)
+
+
+async def query_device(host: str, timeout: float = DISCOVERY_TIMEOUT) -> Optional[DiscoveredDevice]:
+    """Ask one pump for its discovery reply (unicast, so it works across subnets).
+
+    Args:
+        host: The pump's IP address
+        timeout: How long to wait for the reply
+
+    Returns:
+        The pump's details, or None if it didn't answer
+    """
+    loop = asyncio.get_running_loop()
+    reply: asyncio.Future = loop.create_future()
+
+    class _Protocol(asyncio.DatagramProtocol):
+        def datagram_received(self, data, addr):
+            if addr[0] == host and not reply.done():
+                reply.set_result(data)
+
+        def error_received(self, exc):
+            if not reply.done():
+                reply.set_exception(exc)
+
+    try:
+        transport, _ = await loop.create_datagram_endpoint(
+            _Protocol, remote_addr=(host, UDP_DISCOVERY_PORT)
+        )
+    except OSError as err:
+        _LOGGER.debug("Discovery query to %s failed: %s", host, err)
+        return None
+    try:
+        transport.sendto(JebaoDiscovery.DISCOVERY_REQUEST)
+        data = await asyncio.wait_for(reply, timeout)
+    except (asyncio.TimeoutError, OSError) as err:
+        _LOGGER.debug("No discovery reply from %s: %s", host, err or "timeout")
+        return None
+    finally:
+        transport.close()
+    return JebaoDiscovery._parse_discovery_response(data, host)
