@@ -2,7 +2,8 @@
 
 from .device import JebaoDevice
 from .mdp20000 import MDP20000Device
-from .discovery import JebaoDiscovery, DiscoveredDevice, discover_devices
+from .datapoints import AutoMode, PumpStatus, ScheduleSlot, parse_slots
+from .discovery import JebaoDiscovery, DiscoveredDevice, discover_devices, query_device
 from .exceptions import (
     JebaoError,
     JebaoConnectionError,
@@ -17,7 +18,7 @@ from .const import (
     MODEL_MD44,
 )
 
-__version__ = "0.1.7"
+__version__ = "0.2.0"
 
 __all__ = [
     "JebaoDevice",
@@ -25,6 +26,11 @@ __all__ = [
     "JebaoDiscovery",
     "DiscoveredDevice",
     "discover_devices",
+    "query_device",
+    "AutoMode",
+    "PumpStatus",
+    "ScheduleSlot",
+    "parse_slots",
     "JebaoError",
     "JebaoConnectionError",
     "JebaoAuthenticationError",

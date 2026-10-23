@@ -1,6 +1,7 @@
 """MDP-20000 variable-speed circulation pump."""
 import logging
-from typing import Optional
+from datetime import datetime
+from typing import Optional, Sequence
 
 from .const import (
     COMMAND_TIMEOUT,
@@ -11,6 +12,15 @@ from .const import (
     MIN_FEED_DURATION,
     MIN_SPEED,
     MODEL_MDP20000,
+)
+from .datapoints import (
+    MAX_FEED_TIME,
+    MIN_FEED_TIME,
+    ScheduleSlot,
+    encode_clock,
+    encode_write,
+    schedule_state,
+    schedule_values,
 )
 from .device import JebaoDevice
 from .exceptions import JebaoCommandError, JebaoInvalidStateError
@@ -25,8 +35,12 @@ class MDP20000Device(JebaoDevice):
     This class provides control for the Jebao MDP-20000 pump with features:
     - On/Off control
     - Variable speed (30-100%)
-    - Feed mode (temporary pause, 1-10 minutes)
+    - Feed mode (temporary pause, 1-60 minutes)
     - Program mode detection and exit
+    - Schedule (48 slots) and clock
+
+    Also used for the MDP-15000, MDP-3500 and other pumps with the same datapoints
+    (see datapoints.py).
     """
 
     def __init__(self, host: str, port: int = 12416, device_id: Optional[str] = None):
@@ -150,6 +164,13 @@ class MDP20000Device(JebaoDevice):
 
         _LOGGER.info("%s Setting speed to %d%%", self.device_identifier, percentage)
 
+        if self._status is not None and self._status.timer_on:
+            # Like the app's speed slider: a manual speed ends the schedule
+            await self._protocol.send_write(
+                encode_write({"motor_speed": percentage, "timer_on": False}), timeout
+            )
+            return
+
         await self._protocol.send_control_command(
             CommandOpcode.SET_SPEED,
             opcode2=0x00,
@@ -204,25 +225,23 @@ class MDP20000Device(JebaoDevice):
         then automatically resumes at the previous speed.
 
         Args:
-            minutes: Duration in minutes (1-10). If None, uses last configured duration.
+            minutes: Duration in minutes (1-60). If None, uses the pump's FeedTime.
             timeout: Command timeout
 
         Raises:
             ValueError: Invalid duration
             JebaoCommandError: Command failed
-            JebaoInvalidStateError: Device not in valid state for feed mode
 
         Note:
             This method automatically retries up to 3 times on transient
             failures (garbage bytes, connection issues) with longer delays
             due to increased garbage accumulation risk.
         """
-        # Verify device is in manual mode
+        # Feeding works from any state; like the app, the command also turns the
+        # schedule off (START_FEED clears TimerON).
         await self.update()
-        if not self.is_manual_mode:
-            raise JebaoInvalidStateError(
-                f"Cannot start feed from state {self._state.name}"
-            )
+        if self.is_feed_mode:
+            _LOGGER.debug("%s Already in feed mode, restarting it", self.device_identifier)
 
         if minutes is not None:
             if not MIN_FEED_DURATION <= minutes <= MAX_FEED_DURATION:
@@ -231,6 +250,9 @@ class MDP20000Device(JebaoDevice):
                     f"{MAX_FEED_DURATION} minutes, got {minutes}"
                 )
             self._feed_duration = minutes
+
+        else:
+            self._feed_duration = self._current_feed_time()
 
         _LOGGER.info("Starting feed mode for %d minute(s)", self._feed_duration)
 
@@ -273,6 +295,7 @@ class MDP20000Device(JebaoDevice):
 
         if resume_speed is None:
             resume_speed = self._speed or MAX_SPEED
+        self._feed_duration = self._current_feed_time()
 
         if not MIN_SPEED <= resume_speed <= MAX_SPEED:
             raise ValueError(
@@ -292,6 +315,90 @@ class MDP20000Device(JebaoDevice):
 
         # Update status
         await self.update()
+
+    def _current_feed_time(self) -> int:
+        """The pump's own FeedTime if known (so commands don't change it), else the last one set."""
+        if self._status is not None and MIN_FEED_TIME <= self._status.feed_time <= MAX_FEED_TIME:
+            return self._status.feed_time
+        return self._feed_duration
+
+    @async_retry(max_attempts=3, delay=0.5)
+    async def write(self, timeout: float = COMMAND_TIMEOUT, **changes) -> None:
+        """Set datapoints by name (see datapoints.encode_write) and refresh state.
+
+        Example: await pump.write(motor_speed=60, timer_on=False)
+
+        Raises:
+            KeyError/ValueError: Unknown datapoint or value out of range
+            JebaoError: Communication failed
+        """
+        payload = encode_write(changes)
+        _LOGGER.info("%s Writing %s", self.device_identifier, ", ".join(sorted(changes)))
+        status = await self._protocol.send_write(payload, timeout)
+        if not self._apply_status_frame(status):
+            await self.update()
+
+    async def set_feed_time(self, minutes: int, timeout: float = COMMAND_TIMEOUT) -> None:
+        """Set how long feed mode pauses the pump (FeedTime), without starting it."""
+        if not MIN_FEED_TIME <= minutes <= MAX_FEED_TIME:
+            raise ValueError(
+                f"Feed time must be between {MIN_FEED_TIME} and {MAX_FEED_TIME} minutes, got {minutes}"
+            )
+        # The app resends the current FeedSwitch with it
+        feeding = self._status.feed_switch if self._status is not None else False
+        await self.write(timeout=timeout, feed_time=minutes, feed_switch=feeding)
+        self._feed_duration = minutes
+
+    async def set_schedule_enabled(
+        self,
+        enabled: bool,
+        now: Optional[datetime] = None,
+        timeout: float = COMMAND_TIMEOUT,
+    ) -> None:
+        """Turn the pump's own schedule (TimerON) on or off, as the app does.
+
+        Turning it on ends feed mode and sets AutoMode/AutoGears to the slot active
+        at `now` (default: the local time). Turning it off keeps the current speed.
+        """
+        if self._status is None:
+            await self.update()
+        status = self._status
+        if enabled:
+            changes = {"timer_on": True, "feed_switch": False}
+            changes.update(schedule_state(status.schedule, now or datetime.now()))
+        else:
+            changes = {"timer_on": False, "motor_speed": status.motor_speed}
+        await self.write(timeout=timeout, **changes)
+
+    async def set_schedule(
+        self,
+        slots: Sequence[ScheduleSlot],
+        enabled: Optional[bool] = None,
+        now: Optional[datetime] = None,
+        timeout: float = COMMAND_TIMEOUT,
+    ) -> None:
+        """Replace the whole schedule (up to 48 slots; the rest are cleared).
+
+        Args:
+            slots: the new schedule entries (not overlapping, speeds 30-100)
+            enabled: then turn the schedule on or off (None leaves it as it is)
+            now: the time used to pick the active slot (default: the local time)
+
+        Raises:
+            ValueError: the schedule isn't one the app would save
+        """
+        slots = list(slots)
+        await self.write(timeout=timeout, **schedule_values(slots))
+        if enabled is None:
+            enabled = self._status is not None and self._status.timer_on
+            if not enabled:
+                return
+        # Like the app: with the schedule on, also tell the pump which slot is active
+        await self.set_schedule_enabled(enabled, now=now, timeout=timeout)
+
+    async def set_clock(self, when: Optional[datetime] = None, timeout: float = COMMAND_TIMEOUT) -> None:
+        """Set the pump's clock, which its schedule runs on (default: now, local time)."""
+        await self.write(timeout=timeout, **encode_clock(when or datetime.now()))
 
     def __repr__(self) -> str:
         """String representation."""

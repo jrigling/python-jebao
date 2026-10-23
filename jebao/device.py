@@ -4,7 +4,8 @@ import logging
 from typing import Optional
 
 from .const import DEFAULT_TIMEOUT, DeviceState
-from .exceptions import JebaoConnectionError
+from .datapoints import PumpStatus
+from .exceptions import JebaoConnectionError, JebaoTimeoutError
 from .protocol import JebaoProtocol
 from .retry import async_retry
 
@@ -37,6 +38,7 @@ class JebaoDevice:
         self._protocol = JebaoProtocol(host, port, device_id=device_id)
         self._state: Optional[DeviceState] = None
         self._speed: Optional[int] = None
+        self._status: Optional[PumpStatus] = None
         self._last_update: Optional[float] = None
 
     @property
@@ -60,6 +62,11 @@ class JebaoDevice:
     def speed(self) -> Optional[int]:
         """Get current speed percentage (30-100)."""
         return self._speed
+
+    @property
+    def status(self) -> Optional[PumpStatus]:
+        """Every datapoint from the last status read (schedule, faults, ...)."""
+        return self._status
 
     @property
     def is_on(self) -> bool:
@@ -118,26 +125,43 @@ class JebaoDevice:
             JebaoConnectionError: Not connected
             JebaoTimeoutError: Request timed out
         """
-        import time
-
         if not self.is_connected:
             raise JebaoConnectionError("Not connected")
 
-        response = await self._protocol.request_status(timeout)
-        status = self._protocol.parse_status(response)
-
-        if status:
-            self._state = DeviceState(status["state"])
-            self._speed = status["speed"]
-            self._last_update = time.time()
-            _LOGGER.debug(
-                "%s Status updated: state=%s, speed=%d%%",
-                self.device_identifier,
-                self._state.name,
-                self._speed,
-            )
-        else:
+        try:
+            response = await self._protocol.request_status(timeout)
+        except JebaoTimeoutError:
+            # A pump that stops answering has usually dropped the session without
+            # closing it; reconnect on the next attempt instead of waiting again.
+            await self._protocol.disconnect()
+            raise
+        if not self._apply_status_frame(response):
             _LOGGER.warning("%s Failed to parse status response", self.device_identifier)
+
+    def _apply_status_frame(self, frame: Optional[bytes]) -> bool:
+        """Update state from a status frame (a read reply or a pushed report)."""
+        import time
+
+        if not frame:
+            return False
+        status = self._protocol.parse_status(frame)
+        if not status:
+            return False
+        self._state = DeviceState(status["state"])
+        self._speed = status["speed"]
+        try:
+            self._status = self._protocol.parse_values(frame)
+        except ValueError as err:
+            _LOGGER.debug("%s Could not decode datapoints: %s", self.device_identifier, err)
+            self._status = None
+        self._last_update = time.time()
+        _LOGGER.debug(
+            "%s Status updated: state=%s, speed=%d%%",
+            self.device_identifier,
+            self._state.name,
+            self._speed,
+        )
+        return True
 
     async def __aenter__(self):
         """Async context manager entry."""

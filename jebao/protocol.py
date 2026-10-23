@@ -12,7 +12,6 @@ from typing import Dict, Optional, Tuple
 
 from .const import (
     COMMAND_TIMEOUT,
-    CONTROL_COMMAND_SIZE,
     DEFAULT_TIMEOUT,
     MSG_CONTROL_OR_EXTENDED_REQUEST,
     MSG_CONTROL_RESPONSE_OR_EXTENDED_DATA,
@@ -30,6 +29,7 @@ from .const import (
     STATUS_FLAG_RUNNING,
     DeviceState,
 )
+from .datapoints import ATTR_FLAGS_SIZE, VALUES_SIZE, WRITABLE_SIZE, PumpStatus
 from .exceptions import (
     JebaoAuthenticationError,
     JebaoCommandError,
@@ -49,6 +49,30 @@ MAX_RESYNC_BYTES = 512
 
 # How many non-status frames request_status() will skip before giving up
 MAX_SKIPPED_FRAMES = 10
+
+
+def frame_command(frame: bytes) -> Optional[int]:
+    """The command of a frame (after its varint length and flag byte), or None."""
+    pos = len(FRAME_PREFIX)
+    while pos < len(frame) and frame[pos] & 0x80:
+        pos += 1
+    pos += 2  # last length byte, flag
+    if pos + 2 > len(frame):
+        return None
+    return int.from_bytes(frame[pos : pos + 2], "big")
+
+
+def _encode_varint(value: int) -> bytes:
+    """GizWits/MQTT remaining length: 7 bits per byte, low group first."""
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
 
 
 class JebaoProtocol:
@@ -106,6 +130,11 @@ class JebaoProtocol:
             JebaoAuthenticationError: Authentication failed
             JebaoTimeoutError: Operation timed out
         """
+        if self._writer is not None:
+            # Never leave an old session open: the pump keeps it and only has a
+            # few, so leaked ones lock HA (and the app) out until a power cycle.
+            await self.disconnect()
+
         try:
             _LOGGER.debug("%s Connecting to %s:%d", self.device_identifier, self.host, self.port)
             self._reader, self._writer = await asyncio.wait_for(
@@ -445,100 +474,112 @@ class JebaoProtocol:
         param1: int = 0,
         param2: int = 0,
         timeout: float = COMMAND_TIMEOUT,
-    ) -> None:
-        """Send control command to device.
+    ) -> Optional[bytes]:
+        """Send a classic control command.
+
+        These "opcodes" are the start of a GizWits write (see datapoints.py): opcode1
+        is the attribute-flags byte for datapoints 0-7, opcode2/param1/param2 are
+        values bytes 0-2 (state bits, Motor_Speed, FeedTime).
+
+        Returns:
+            The status frame the pump pushed after the command, if any
+        """
+        payload = bytearray(ATTR_FLAGS_SIZE + WRITABLE_SIZE)
+        payload[ATTR_FLAGS_SIZE - 1] = opcode1
+        payload[ATTR_FLAGS_SIZE : ATTR_FLAGS_SIZE + 3] = bytes((opcode2, param1, param2))
+        _LOGGER.debug(
+            "%s Sending control command: opcode1=0x%02x, opcode2=0x%02x, param1=%d, param2=%d",
+            self.device_identifier,
+            opcode1,
+            opcode2,
+            param1,
+            param2,
+        )
+        return await self.send_write(bytes(payload), timeout)
+
+    async def send_write(self, payload: bytes, timeout: float = COMMAND_TIMEOUT) -> Optional[bytes]:
+        """Send a GizWits write (cmd 0x0093, action 0x01).
 
         Args:
-            opcode1: Primary opcode (at byte 21)
-            opcode2: Secondary opcode (at byte 22)
-            param1: Parameter 1 (at byte 23)
-            param2: Parameter 2 (at byte 24)
-            timeout: Command timeout
+            payload: attribute flags + writable values, from datapoints.encode_write()
+            timeout: how long to wait for the pump's acknowledgement
+
+        Returns:
+            The status frame the pump pushed after the write (0x0091 action 0x04),
+            or None if it sent none
 
         Raises:
             JebaoConnectionError: Not connected
-            JebaoCommandError: Command failed
-            JebaoTimeoutError: Command timed out
+            JebaoCommandError: Payload has the wrong size
         """
+        if len(payload) != ATTR_FLAGS_SIZE + WRITABLE_SIZE:
+            # A short write makes the pump take whatever follows as data; an empty
+            # one has corrupted pump settings before.
+            raise JebaoCommandError(f"Write payload must be {ATTR_FLAGS_SIZE + WRITABLE_SIZE} bytes")
+        if not any(payload[:ATTR_FLAGS_SIZE]):
+            raise JebaoCommandError("Write payload sets no datapoints")
+
         # Serialize requests - only one operation at a time
         async with self._request_lock:
             if not self.is_connected:
                 raise JebaoConnectionError("Not connected")
 
             # Drain any unexpected leftover bytes as safety net (very short timeout)
-            # Normally every frame is read whole, but this catches edge cases
             await self._drain_garbage_bytes(timeout=0.01)
 
-            command = self._build_control_command(opcode1, opcode2, param1, param2)
-            _LOGGER.debug(
-                "%s Sending control command: opcode1=0x%02x, opcode2=0x%02x, param1=%d, param2=%d",
-                self.device_identifier,
-                opcode1,
-                opcode2,
-                param1,
-                param2,
-            )
-            await self._send_raw(command)
+            sequence = self._sequence
+            self._sequence = self._sequence % 0xFFFFFFFF + 1
+            await self._send_raw(self._build_write(sequence, payload))
 
-            # Read ACK (message type 0x94) directly
-            # The pump sends an ACK for control commands
-            try:
-                ack = await asyncio.wait_for(self._read_raw(), timeout=timeout)
-                ack_type = ack[7] if len(ack) > 7 else 0
-                _LOGGER.debug("Control command ACK received: type=0x%02x, %d bytes", ack_type, len(ack))
-
-                # After ACK, pump may send unsolicited status update
-                # Try to read it with short timeout
+            # The pump acknowledges with 0x0094 and then usually pushes its new
+            # status (0x0091 action 0x04). Either may come first, and other frames
+            # can be interleaved, so read for a bounded number of frames.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + timeout
+            acked = False
+            status: Optional[bytes] = None
+            for _ in range(MAX_SKIPPED_FRAMES + 1):
+                # Once acknowledged, give the status report only a short window
+                remaining = (deadline if not acked else min(deadline, loop.time() + 1.0)) - loop.time()
+                if remaining <= 0:
+                    break
                 try:
-                    status_update = await asyncio.wait_for(self._read_raw(), timeout=0.5)
-                    status_type = status_update[7] if len(status_update) > 7 else 0
-                    _LOGGER.info(
-                        "Pump sent unsolicited status update after control command: type=0x%02x",
-                        status_type,
-                    )
+                    frame = await asyncio.wait_for(self._read_raw(), timeout=remaining)
                 except asyncio.TimeoutError:
-                    # No status update sent, that's OK
-                    _LOGGER.debug("No unsolicited status update after control command")
+                    break
+                if self.is_status_frame(frame):
+                    status = frame
+                    if acked:
+                        break
+                elif frame_command(frame) == MSG_CONTROL_RESPONSE_OR_EXTENDED_DATA:
+                    acked = True
+                    if status is not None:
+                        break
+                else:
+                    _LOGGER.debug(
+                        "%s Skipping frame while waiting for write ack: %s",
+                        self.device_identifier,
+                        frame[:12].hex(),
+                    )
 
-            except asyncio.TimeoutError:
-                _LOGGER.warning("Control command sent but no ACK received (pump may still process it)")
-                # Don't raise - pump may still process the command even without ACK
+            if not acked:
+                _LOGGER.warning(
+                    "%s Write sent but not acknowledged (pump may still apply it)",
+                    self.device_identifier,
+                )
+            return status
 
-    def _build_control_command(
-        self, opcode1: int, opcode2: int, param1: int, param2: int
-    ) -> bytes:
-        """Build control command message.
-
-        Args:
-            opcode1: Primary opcode
-            opcode2: Secondary opcode
-            param1: Parameter 1
-            param2: Parameter 2
-
-        Returns:
-            323-byte command message
-        """
-        buffer = bytearray(CONTROL_COMMAND_SIZE)
-
-        # Header
-        buffer[0:4] = b"\x00\x00\x00\x03"
-        buffer[4] = 0xBD
-        buffer[5] = 0x02
-
-        # Message type and sequence
-        buffer[8] = MSG_CONTROL_OR_EXTENDED_REQUEST
-        buffer[9:13] = self._sequence.to_bytes(4, "big")
-        self._sequence += 1
-        buffer[13] = 0x01
-
-        # Command payload
-        buffer[21] = opcode1
-        buffer[22] = opcode2
-        buffer[23] = param1
-        buffer[24] = param2
-
-        # Rest is zeros (already initialized)
-        return bytes(buffer)
+    @staticmethod
+    def _build_write(sequence: int, payload: bytes) -> bytes:
+        """Frame for a write: prefix, varint length, flag 0, cmd 0x0093, sn, action 0x01."""
+        body = (
+            b"\x00"
+            + MSG_CONTROL_OR_EXTENDED_REQUEST.to_bytes(2, "big")
+            + sequence.to_bytes(4, "big")
+            + b"\x01"
+            + payload
+        )
+        return FRAME_PREFIX + _encode_varint(len(body)) + body
 
     @staticmethod
     def _build_passcode_request() -> bytes:
@@ -729,3 +770,14 @@ class JebaoProtocol:
             "state": int(state),
             "speed": data[11],
         }
+
+    @staticmethod
+    def parse_values(data: bytes) -> Optional[PumpStatus]:
+        """Decode every datapoint of a status frame (see datapoints.py).
+
+        Returns:
+            The decoded status, or None if the frame isn't a full status frame
+        """
+        if not JebaoProtocol.is_status_frame(data) or len(data) < 10 + VALUES_SIZE:
+            return None
+        return PumpStatus.from_values(data[10 : 10 + VALUES_SIZE])

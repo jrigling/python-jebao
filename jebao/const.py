@@ -77,7 +77,7 @@ class CommandOpcode(IntEnum):
     TURN_ON_OFF = 0x01  # Byte 22: 0x01=ON, 0x00=OFF
     SET_SPEED = 0x20  # Byte 23: speed 30-100
     EXIT_PROGRAM = 0x28  # Exit Program mode
-    SET_FEED_DURATION = 0x44  # Byte 24: duration 1-10 minutes
+    SET_FEED_DURATION = 0x44  # Byte 24: duration 1-60 minutes
     START_FEED = 0x4C  # Start feed mode
     CANCEL_FEED = 0x6C  # Cancel feed mode
 
@@ -86,6 +86,6 @@ class CommandOpcode(IntEnum):
 MIN_SPEED = 30
 MAX_SPEED = 100
 
-# Feed duration limits (minutes)
+# Feed duration limits (minutes; the pumps' datapoint definition allows 1-60)
 MIN_FEED_DURATION = 1
-MAX_FEED_DURATION = 10
+MAX_FEED_DURATION = 60
