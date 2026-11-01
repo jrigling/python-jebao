@@ -78,13 +78,20 @@ def _encode_varint(value: int) -> bytes:
 class JebaoProtocol:
     """Low-level protocol implementation for Jebao devices."""
 
-    def __init__(self, host: str, port: int = 12416, device_id: Optional[str] = None):
+    def __init__(
+        self,
+        host: str,
+        port: int = 12416,
+        device_id: Optional[str] = None,
+        passcode: Optional[str] = None,
+    ):
         """Initialize protocol handler.
 
         Args:
             host: Device IP address
             port: TCP port (default 12416)
             device_id: Device ID for logging (optional)
+            passcode: The pump's passcode, if known (see connect())
         """
         self.host = host
         self.port = port
@@ -93,7 +100,7 @@ class JebaoProtocol:
         self._writer: Optional[asyncio.StreamWriter] = None
         self._sequence = 1
         self._keepalive_task: Optional[asyncio.Task] = None
-        self._passcode: Optional[bytes] = None
+        self._passcode: Optional[bytes] = passcode.encode("ascii") if passcode else None
 
         # Locks for thread-safe operation
         self._request_lock = asyncio.Lock()  # Serialize entire request-response cycles
@@ -119,8 +126,19 @@ class JebaoProtocol:
         """Check if connection is established."""
         return self._writer is not None and not self._writer.is_closing()
 
+    @property
+    def passcode(self) -> Optional[str]:
+        """The pump's passcode, once known (given, or read at the first login)."""
+        return self._passcode.decode("ascii") if self._passcode else None
+
     async def connect(self, timeout: float = DEFAULT_TIMEOUT) -> None:
         """Connect to device and authenticate.
+
+        The passcode is fixed per pump (it only changes on a factory reset), but
+        the Wi-Fi module only hands it out for a while after it boots (GAgent's
+        binding window; after that it answers with an empty passcode and closes
+        the connection). Login itself works any time. So once the passcode is
+        known, log in with it directly, and only ask the pump if that's refused.
 
         Args:
             timeout: Connection timeout in seconds
@@ -135,6 +153,20 @@ class JebaoProtocol:
             # few, so leaked ones lock HA (and the app) out until a power cycle.
             await self.disconnect()
 
+        if self._passcode is not None:
+            try:
+                await self._open_and_authenticate(timeout, self._passcode)
+                return
+            except JebaoAuthenticationError as err:
+                _LOGGER.warning(
+                    "%s Login with the known passcode failed (%s), asking the pump for it",
+                    self.device_identifier,
+                    err,
+                )
+        await self._open_and_authenticate(timeout, None)
+
+    async def _open_and_authenticate(self, timeout: float, passcode: Optional[bytes]) -> None:
+        """Open a connection and log in, with the given passcode or one asked for."""
         try:
             _LOGGER.debug("%s Connecting to %s:%d", self.device_identifier, self.host, self.port)
             self._reader, self._writer = await asyncio.wait_for(
@@ -148,7 +180,7 @@ class JebaoProtocol:
             ) from err
 
         try:
-            await self._authenticate(timeout)
+            await self._authenticate(timeout, passcode)
             # Note: Message dispatcher disabled - causes issues with pump's padding bytes
             # Using synchronous request-response pattern instead
             # self._start_message_reader()
@@ -159,39 +191,23 @@ class JebaoProtocol:
             await self.disconnect()
             raise
 
-    async def _authenticate(self, timeout: float) -> None:
+    async def _authenticate(self, timeout: float, passcode: Optional[bytes] = None) -> None:
         """Perform authentication handshake.
 
         Args:
             timeout: Operation timeout
+            passcode: Log in with this instead of asking the pump for it
 
         Raises:
             JebaoAuthenticationError: Authentication failed
         """
         _LOGGER.debug("%s Starting authentication", self.device_identifier)
 
-        # Step 1: Request passcode
-        request = self._build_passcode_request()
-        await self._send_raw(request)
-
-        # Step 2: Receive passcode
-        try:
-            response = await asyncio.wait_for(self._read_raw(), timeout=timeout)
-        except asyncio.TimeoutError as err:
-            raise JebaoAuthenticationError("Passcode request timed out") from err
-
-        _LOGGER.debug(f"Passcode response length: {len(response)}, data: {response[:30].hex() if len(response) >= 30 else response.hex()}")
-
-        # Message type is at byte 7, not byte 8
-        if len(response) < 20 or response[7] != MSG_PASSCODE_RESPONSE:
-            _LOGGER.error(f"Invalid response - length: {len(response)}, type at [7]: {response[7] if len(response) > 7 else 'N/A'}")
-            raise JebaoAuthenticationError("Invalid passcode response")
-
-        self._passcode = response[10:20]  # Extract 10-character passcode
-        _LOGGER.debug("Received passcode: %s", self._passcode.decode("ascii"))
+        if passcode is None:
+            passcode = await self._request_passcode(timeout)
 
         # Step 3: Login with passcode
-        login = self._build_login_request(self._passcode)
+        login = self._build_login_request(passcode)
         _LOGGER.debug(f"Sending login request: {login.hex()}")
         await self._send_raw(login)
 
@@ -212,11 +228,40 @@ class JebaoProtocol:
             _LOGGER.error(f"Login failed - expected type 0x{MSG_LOGIN_SUCCESS:02x} at byte 7, got 0x{response[7]:02x}")
             raise JebaoAuthenticationError("Login failed")
 
+        # Byte 8 is the result: 0 = OK, 1 = wrong passcode (then the pump hangs up)
+        if len(response) > 8 and response[8] != 0:
+            raise JebaoAuthenticationError("Login refused (wrong passcode)")
+
+        self._passcode = passcode
         _LOGGER.info("%s Authentication successful", self.device_identifier)
 
         # Some pumps (MDP-15000) follow the login-OK with a duplicate login-OK and a
         # 0x62 frame. Consume them now so the first status read doesn't get them.
         await self._drain_garbage_bytes(timeout=POST_LOGIN_DRAIN_TIMEOUT)
+
+    async def _request_passcode(self, timeout: float) -> bytes:
+        """Ask the pump for its passcode (only answered in its binding window)."""
+        await self._send_raw(self._build_passcode_request())
+        try:
+            response = await asyncio.wait_for(self._read_raw(), timeout=timeout)
+        except asyncio.TimeoutError as err:
+            raise JebaoAuthenticationError("Passcode request timed out") from err
+
+        _LOGGER.debug(f"Passcode response length: {len(response)}, data: {response[:30].hex() if len(response) >= 30 else response.hex()}")
+
+        # Message type is at byte 7, not byte 8
+        if len(response) >= 10 and response[7] == MSG_PASSCODE_RESPONSE and response[8:10] == b"\x00\x00":
+            raise JebaoAuthenticationError(
+                "The pump won't give out its passcode (its binding window after power-up "
+                "has closed); power-cycle it, or configure the passcode"
+            )
+        if len(response) < 20 or response[7] != MSG_PASSCODE_RESPONSE:
+            _LOGGER.error(f"Invalid response - length: {len(response)}, type at [7]: {response[7] if len(response) > 7 else 'N/A'}")
+            raise JebaoAuthenticationError("Invalid passcode response")
+
+        passcode = response[10:20]  # Extract 10-character passcode
+        _LOGGER.debug("Received passcode: %s", passcode.decode("ascii"))
+        return passcode
 
     async def disconnect(self) -> None:
         """Disconnect from device."""
