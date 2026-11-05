@@ -5,13 +5,26 @@ Python library for controlling Jebao aquarium pumps over local network.
 ## Supported Models
 
 - **MDP-20000**: Variable-speed circulation pump (30-100% speed control)
+- **MDP-15000**: Variable-speed circulation pump (same protocol as the MDP-20000)
+- **MDP-3500**: Variable-speed circulation pump (same protocol; reported working in
+  [homeassistant-jebao#2](https://github.com/jrigling/homeassistant-jebao/issues/2))
+- **MDP-5000**: same datapoints as the MDP-15000
+- **MDP-2500**: Likely the same protocol
+  ([homeassistant-jebao#1](https://github.com/jrigling/homeassistant-jebao/issues/1), unconfirmed)
 - **MD-4.4**: 4-channel dosing pump (planned)
+
+These pumps can't be told apart over the network. They report the same GizWits product key
+(`6a5c47b3ea364ecb841b47f5997a1775`) and datapoints, and the 8-character value discovery has always
+called the product key (`04D30Q34`, `04D30Q37`) is the Wi-Fi module's firmware version. The Jebao
+app doesn't know the model either. Discovery labels `04D30Q37` pumps MDP-15000 and the rest
+MDP-20000. They all work with `MDP20000Device`.
 
 ## Features
 
 - 🔍 **UDP Discovery** - Automatic device discovery with multi-subnet support
 - 🔌 **Local Control** - Direct TCP control, no cloud dependency
-- ⚡ **Full Protocol** - On/Off, speed control, feed mode, status monitoring
+- ⚡ **Full Protocol** - On/Off, speed control, feed mode, the pump's own 48-slot daily schedule,
+  clock, fault bits; every datapoint decoded (`jebao.datapoints`)
 - 🏠 **Home Assistant Ready** - Designed for HA integration
 - 🔒 **Type Safe** - Full type hints for better IDE support
 
@@ -172,13 +185,42 @@ pump.is_manual_mode  # True if ON or OFF
 - `async turn_off()` - Turn pump off
 - `async set_speed(percentage)` - Set speed (30-100%)
 
+`set_speed` ends the schedule if it's running, as the app's speed slider does.
+
 #### Feed Mode
-- `async set_feed_duration(minutes)` - Configure feed timer (1-10 minutes)
-- `async start_feed(minutes=None)` - Start feed mode
+- `async set_feed_time(minutes)` - Set the feed pause (1-60 minutes) without starting it
+- `async set_feed_duration(minutes)` - Older command for the same; also ends feed mode
+- `async start_feed(minutes=None)` - Pause the pump (default: its own feed time). Like the app,
+  this turns the schedule off.
 - `async cancel_feed(resume_speed=None)` - Cancel feed and resume
 
-#### Program Mode
+#### Schedule ("Program" in the app) and clock
+- `async set_schedule(slots, enabled=None)` - Replace the daily schedule: up to 48 `ScheduleSlot`s
+  (start, end, mode RUN/FEED/OFF, speed 30-100 for RUN), not overlapping; a slot may run past
+  midnight. Unused slots are cleared.
+- `async set_schedule_enabled(enabled)` - Turn the schedule on (also tells the pump which slot is
+  active now, as the app does) or off (keeps the current speed)
+- `async set_clock(when=None)` - Set the pump's clock, which the schedule runs on. The pump keeps
+  time itself, but nothing sets it except the app's "Set Time"; the clock datapoint reads back the
+  last value written.
 - `async ensure_manual_mode()` - Exit Program mode if active
+
+```python
+from jebao import parse_slots
+
+await pump.set_clock()
+await pump.set_schedule(
+    parse_slots([
+        {"start": "08:00", "end": "20:00", "mode": "run", "speed": 80},
+        {"start": "20:00", "end": "08:00", "mode": "run", "speed": 40},
+    ]),
+    enabled=True,
+)
+```
+
+#### Any datapoint
+- `async write(**changes)` - Write datapoints by name, e.g. `write(motor_speed=60, timer_on=False)`
+  (see `jebao/datapoints.py` for the layout)
 
 #### Properties
 - `state: DeviceState` - Current state
@@ -188,6 +230,9 @@ pump.is_manual_mode  # True if ON or OFF
 - `is_feed_mode: bool` - In feed mode
 - `is_program_mode: bool` - In program mode
 - `is_manual_mode: bool` - In manual mode
+- `status: PumpStatus` - Every datapoint from the last read: `switch_on`, `feed_switch`,
+  `timer_on`, `auto_mode`/`auto_gears` (what the schedule is doing), `motor_speed`, `feed_time`,
+  `schedule`/`schedule_slots`, `clock`, `faults`
 
 ### Discovery
 
@@ -204,6 +249,9 @@ devices = await discovery.discover(timeout=2.0, interfaces=['eth0'])
 # Filter by model
 mdp20000_devices = [d for d in devices if d.is_mdp20000]
 md44_devices = [d for d in devices if d.is_md44]
+
+# Ask one pump directly (unicast; works across subnets)
+device = await query_device("192.168.30.51")
 ```
 
 ### DiscoveredDevice
@@ -212,7 +260,9 @@ md44_devices = [d for d in devices if d.is_md44]
 device.device_id      # Device ID (e.g., "POAKSFXJNJ")
 device.ip_address     # IP address
 device.mac_address    # MAC address
-device.product_key    # Product key
+device.product_key    # 8-char key models were told apart by (the Wi-Fi firmware version)
+device.firmware_version  # Same value
+device.gizwits_product_key  # The GizWits product key (32 hex chars)
 device.model          # Model name (e.g., "MDP-20000")
 device.is_mdp20000    # True if MDP-20000
 device.is_md44        # True if MD-4.4
