@@ -4,6 +4,8 @@ GAgent only hands out the passcode in its binding window after power-up; after
 that it replies with an empty passcode and closes. Login works any time.
 """
 import asyncio
+import socket
+import sys
 
 import pytest
 
@@ -45,7 +47,7 @@ class FakePump:
                     await writer.drain()
                     if not ok:
                         break
-        except asyncio.IncompleteReadError:
+        except (asyncio.IncompleteReadError, ConnectionResetError):
             pass
         writer.close()
 
@@ -59,6 +61,38 @@ class FakePump:
         finally:
             await protocol.disconnect()
             server.close()
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses a reused port this soon")
+def test_local_port_can_reconnect_straight_away():
+    pump = FakePump(binding=False)
+    ports = []
+
+    async def handle(reader, writer):
+        ports.append(writer.get_extra_info("peername")[1])
+        await pump.handle(reader, writer)
+
+    async def run():
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        local_port = free_port()
+        protocol = JebaoProtocol(
+            "127.0.0.1", port, passcode=PASSCODE.decode(), local_port=local_port
+        )
+        for _ in range(3):
+            await protocol.connect(timeout=2)
+            await protocol.disconnect()
+        server.close()
+        return local_port
+
+    local_port = asyncio.run(run())
+    assert ports == [local_port] * 3
 
 
 def test_first_login_reads_and_keeps_passcode():

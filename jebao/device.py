@@ -22,6 +22,7 @@ class JebaoDevice:
         device_id: Optional[str] = None,
         model: Optional[str] = None,
         passcode: Optional[str] = None,
+        local_port: Optional[int] = None,
     ):
         """Initialize device.
 
@@ -33,13 +34,18 @@ class JebaoDevice:
             passcode: The pump's passcode, if known. Pumps only hand it out for a
                 while after power-up, so save `passcode` after connecting and pass
                 it back next time.
+            local_port: Connect from this fixed port, so a reconnect clears this
+                client's stale session instead of leaving it to fill the pump's
+                session slots. Use a different port for each client of a pump.
         """
         self.host = host
         self.port = port
         self.device_id = device_id
         self.model = model
 
-        self._protocol = JebaoProtocol(host, port, device_id=device_id, passcode=passcode)
+        self._protocol = JebaoProtocol(
+            host, port, device_id=device_id, passcode=passcode, local_port=local_port
+        )
         self._state: Optional[DeviceState] = None
         self._speed: Optional[int] = None
         self._status: Optional[PumpStatus] = None

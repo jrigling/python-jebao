@@ -49,6 +49,7 @@ class MDP20000Device(JebaoDevice):
         port: int = 12416,
         device_id: Optional[str] = None,
         passcode: Optional[str] = None,
+        local_port: Optional[int] = None,
     ):
         """Initialize MDP-20000 device.
 
@@ -57,8 +58,9 @@ class MDP20000Device(JebaoDevice):
             port: TCP port (default 12416)
             device_id: Device ID (from discovery)
             passcode: The pump's passcode, if known (see JebaoDevice)
+            local_port: Fixed source port, if any (see JebaoDevice)
         """
-        super().__init__(host, port, device_id, MODEL_MDP20000, passcode)
+        super().__init__(host, port, device_id, MODEL_MDP20000, passcode, local_port)
         self._feed_duration: int = 1  # Last configured feed duration
 
     @async_retry(max_attempts=3, delay=0.5)

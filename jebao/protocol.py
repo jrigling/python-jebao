@@ -8,6 +8,8 @@ that work, with extensions for MDP-20000 support and asyncio implementation.
 """
 import asyncio
 import logging
+import socket
+import struct
 from typing import Dict, Optional, Tuple
 
 from .const import (
@@ -84,6 +86,7 @@ class JebaoProtocol:
         port: int = 12416,
         device_id: Optional[str] = None,
         passcode: Optional[str] = None,
+        local_port: Optional[int] = None,
     ):
         """Initialize protocol handler.
 
@@ -92,6 +95,8 @@ class JebaoProtocol:
             port: TCP port (default 12416)
             device_id: Device ID for logging (optional)
             passcode: The pump's passcode, if known (see connect())
+            local_port: Connect from this port, so a reconnect replaces this
+                client's previous session (see _open_connection())
         """
         self.host = host
         self.port = port
@@ -101,6 +106,7 @@ class JebaoProtocol:
         self._sequence = 1
         self._keepalive_task: Optional[asyncio.Task] = None
         self._passcode: Optional[bytes] = passcode.encode("ascii") if passcode else None
+        self._local_port = local_port
 
         # Locks for thread-safe operation
         self._request_lock = asyncio.Lock()  # Serialize entire request-response cycles
@@ -170,7 +176,7 @@ class JebaoProtocol:
         try:
             _LOGGER.debug("%s Connecting to %s:%d", self.device_identifier, self.host, self.port)
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port), timeout=timeout
+                self._open_connection(), timeout=timeout
             )
         except asyncio.TimeoutError as err:
             raise JebaoTimeoutError(f"Connection to {self.host} timed out") from err
@@ -189,6 +195,34 @@ class JebaoProtocol:
             # self._start_keepalive()
         except Exception:
             await self.disconnect()
+            raise
+
+    async def _open_connection(self) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        """Open the TCP connection, from local_port if one is set.
+
+        Pumps have few session slots and don't expire a session, so one whose close
+        got lost (usual on their weak Wi-Fi) holds its slot until the pump drops off
+        Wi-Fi or is power-cycled. Enough of those and the pump refuses every login.
+        A session is identified by its ports, so a connection from the same port
+        hits the stale one: the pump answers for the old session, the OS resets it,
+        and the connect goes through about a second later, even on a full pump.
+
+        SO_LINGER 0 makes every close a reset, which leaves no TIME_WAIT to block the
+        next connection from this port (it applies at process exit too).
+        """
+        if self._local_port is None:
+            return await asyncio.open_connection(self.host, self.port)
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.setblocking(False)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            sock.bind(("", self._local_port))
+            await asyncio.get_running_loop().sock_connect(sock, (self.host, self.port))
+            return await asyncio.open_connection(sock=sock)
+        except BaseException:
+            sock.close()
             raise
 
     async def _authenticate(self, timeout: float, passcode: Optional[bytes] = None) -> None:
