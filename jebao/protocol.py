@@ -217,7 +217,10 @@ class JebaoProtocol:
             _LOGGER.debug(f"Login response: {response.hex()}")
         except asyncio.TimeoutError as err:
             _LOGGER.error("Login timed out - pump may be busy or rate-limited")
-            raise JebaoAuthenticationError("Login timed out") from err
+            # Not a refusal: a timeout says nothing about the passcode, and the pump
+            # is usually unreachable. Asking for the passcode would only leave one
+            # more dead session on a pump that has few to spare.
+            raise JebaoTimeoutError("Login timed out") from err
 
         # Message type is at byte 7
         if len(response) < 8:

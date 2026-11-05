@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from jebao.exceptions import JebaoAuthenticationError
+from jebao.exceptions import JebaoAuthenticationError, JebaoTimeoutError
 from jebao.protocol import JebaoProtocol
 
 PASSCODE = b"JJRSBSOEEL"
@@ -15,8 +15,9 @@ PASSCODE_REQUEST = bytes.fromhex("00000003050000060100")
 
 
 class FakePump:
-    def __init__(self, binding: bool):
+    def __init__(self, binding: bool, answer_login: bool = True):
         self.binding = binding
+        self.answer_login = answer_login
         self.passcode_requests = 0
         self.logins = []
 
@@ -38,6 +39,8 @@ class FakePump:
                 elif cmd == b"\x00\x08":
                     ok = body[5:15] == PASSCODE
                     self.logins.append(body[5:15])
+                    if not self.answer_login:
+                        continue
                     writer.write(bytes.fromhex("00000003040000090" + ("0" if ok else "1")))
                     await writer.drain()
                     if not ok:
@@ -83,3 +86,11 @@ def test_closed_binding_window_without_passcode_says_so():
     pump = FakePump(binding=False)
     with pytest.raises(JebaoAuthenticationError, match="binding window"):
         asyncio.run(pump.connect())
+
+
+def test_login_timeout_does_not_ask_for_passcode():
+    pump = FakePump(binding=False, answer_login=False)
+    with pytest.raises(JebaoTimeoutError, match="Login timed out"):
+        asyncio.run(pump.connect(passcode=PASSCODE.decode()))
+    assert len(pump.logins) == 1
+    assert pump.passcode_requests == 0
