@@ -9,6 +9,8 @@ import netifaces
 
 from .const import (
     DISCOVERY_TIMEOUT,
+    GIZWITS_PRODUCT_KEY_ECP150M,
+    MODEL_ECP150M,
     MODEL_MD44,
     MODEL_MDP20000,
     PRODUCT_KEY_MD44,
@@ -55,6 +57,11 @@ class DiscoveredDevice:
     def is_md44(self) -> bool:
         """Check if device is MD-4.4."""
         return self.model == MODEL_MD44
+
+    @property
+    def is_ecp150m(self) -> bool:
+        """Check if device is ECP-150M."""
+        return self.model == MODEL_ECP150M
 
 
 class JebaoDiscovery:
@@ -387,8 +394,18 @@ class JebaoDiscovery:
             product_key_start = device_id_end + 2 + 6 + 2
             product_key = data[product_key_start : product_key_start + 8].rstrip(b"\x00").decode("ascii")
 
+            # The 32-character Gizwits product key is the next length-prefixed field
+            field_length = int.from_bytes(data[product_key_start - 2 : product_key_start], "big")
+            gizwits_key_start = product_key_start + field_length + 2
+            gizwits_key_length = int.from_bytes(data[gizwits_key_start - 2 : gizwits_key_start], "big")
+            gizwits_product_key = data[
+                gizwits_key_start : gizwits_key_start + gizwits_key_length
+            ].decode("ascii", errors="replace")
+
             # Determine model from product key
-            if product_key in PRODUCT_KEYS_MDP20000:
+            if gizwits_product_key == GIZWITS_PRODUCT_KEY_ECP150M:
+                model = MODEL_ECP150M
+            elif product_key in PRODUCT_KEYS_MDP20000:
                 model = MODEL_MDP20000
             elif product_key == PRODUCT_KEY_MD44:
                 model = MODEL_MD44

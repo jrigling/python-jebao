@@ -37,9 +37,14 @@ PRODUCT_KEY_MD44 = "04020B27"  # Assumed, verify if needed
 # All known product keys that identify an MDP-20000 (across hardware revisions)
 PRODUCT_KEYS_MDP20000 = frozenset({PRODUCT_KEY_MDP20000, PRODUCT_KEY_MDP20000_V2})
 
+# 32-character Gizwits product key (fourth discovery field). The ECP-150M reports
+# 04020B28 in the field read as the product key above, so it must be checked first.
+GIZWITS_PRODUCT_KEY_ECP150M = "1d8c63eaccac4205b92c84d77d5a08fb"
+
 # Model identifiers
 MODEL_MDP20000 = "MDP-20000"
 MODEL_MD44 = "MD-4.4"
+MODEL_ECP150M = "ECP-150M"
 
 
 class DeviceState(IntEnum):
