@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-jebao"
-version = "0.1.7"
+version = "0.2.0"
 description = "Python library for controlling Jebao aquarium pumps"
 readme = "README.md"
 license = "MIT"
@@ -81,6 +81,7 @@ ignore = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

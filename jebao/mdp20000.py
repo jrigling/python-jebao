@@ -14,7 +14,6 @@ from .const import (
 )
 from .device import JebaoDevice
 from .exceptions import JebaoCommandError, JebaoInvalidStateError
-from .retry import async_retry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +39,6 @@ class MDP20000Device(JebaoDevice):
         super().__init__(host, port, device_id, MODEL_MDP20000)
         self._feed_duration: int = 1  # Last configured feed duration
 
-    @async_retry(max_attempts=3, delay=0.5)
     async def ensure_manual_mode(self, timeout: float = COMMAND_TIMEOUT) -> None:
         """Ensure device is in manual mode.
 
@@ -76,7 +74,6 @@ class MDP20000Device(JebaoDevice):
         else:
             _LOGGER.debug("Device already in manual mode")
 
-    @async_retry(max_attempts=3, delay=0.5)
     async def turn_on(self, timeout: float = COMMAND_TIMEOUT) -> None:
         """Turn pump on.
 
@@ -87,8 +84,7 @@ class MDP20000Device(JebaoDevice):
             JebaoCommandError: Command failed
 
         Note:
-            This method automatically retries up to 3 times on transient
-            failures (garbage bytes, connection issues).
+            Session setup is retried; the command itself is sent at most once.
         """
         _LOGGER.info("%s Turning on pump", self.device_identifier)
 
@@ -101,7 +97,6 @@ class MDP20000Device(JebaoDevice):
         # Note: Call update() after a delay to see new state
         # The pump needs time to process the command
 
-    @async_retry(max_attempts=3, delay=0.5)
     async def turn_off(self, timeout: float = COMMAND_TIMEOUT) -> None:
         """Turn pump off.
 
@@ -112,8 +107,7 @@ class MDP20000Device(JebaoDevice):
             JebaoCommandError: Command failed
 
         Note:
-            This method automatically retries up to 3 times on transient
-            failures (garbage bytes, connection issues).
+            Session setup is retried; the command itself is sent at most once.
         """
         _LOGGER.info("%s Turning off pump", self.device_identifier)
 
@@ -125,7 +119,6 @@ class MDP20000Device(JebaoDevice):
 
         # Note: Call update() after a delay to see new state
 
-    @async_retry(max_attempts=3, delay=0.5)
     async def set_speed(
         self, percentage: int, timeout: float = COMMAND_TIMEOUT
     ) -> None:
@@ -140,8 +133,7 @@ class MDP20000Device(JebaoDevice):
             JebaoCommandError: Command failed
 
         Note:
-            This method automatically retries up to 3 times on transient
-            failures (garbage bytes, connection issues).
+            Session setup is retried; the command itself is sent at most once.
         """
         if not MIN_SPEED <= percentage <= MAX_SPEED:
             raise ValueError(
@@ -194,7 +186,6 @@ class MDP20000Device(JebaoDevice):
 
         self._feed_duration = minutes
 
-    @async_retry(max_attempts=3, delay=1.0, backoff=1.5)
     async def start_feed(
         self, minutes: Optional[int] = None, timeout: float = COMMAND_TIMEOUT
     ) -> None:
@@ -213,9 +204,7 @@ class MDP20000Device(JebaoDevice):
             JebaoInvalidStateError: Device not in valid state for feed mode
 
         Note:
-            This method automatically retries up to 3 times on transient
-            failures (garbage bytes, connection issues) with longer delays
-            due to increased garbage accumulation risk.
+            Session setup is retried; the command itself is sent at most once.
         """
         # Verify device is in manual mode
         await self.update()
@@ -245,7 +234,6 @@ class MDP20000Device(JebaoDevice):
         # Update status
         await self.update()
 
-    @async_retry(max_attempts=3, delay=1.0, backoff=1.5)
     async def cancel_feed(
         self, resume_speed: Optional[int] = None, timeout: float = COMMAND_TIMEOUT
     ) -> None:
@@ -261,9 +249,7 @@ class MDP20000Device(JebaoDevice):
             JebaoInvalidStateError: Device not in feed mode
 
         Note:
-            This method automatically retries up to 3 times on transient
-            failures (garbage bytes, connection issues) with longer delays
-            due to increased garbage accumulation risk.
+            Session setup is retried; the command itself is sent at most once.
         """
         # Verify device is in feed mode
         await self.update()

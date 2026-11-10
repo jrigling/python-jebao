@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from .const import DEFAULT_TIMEOUT, DeviceState
-from .exceptions import JebaoConnectionError
+from .exceptions import JebaoCommandError
 from .protocol import JebaoProtocol
 from .retry import async_retry
 
@@ -29,7 +29,6 @@ class JebaoDevice:
             device_id: Device ID (from discovery)
             model: Device model
         """
-        self.host = host
         self.port = port
         self.device_id = device_id
         self.model = model
@@ -38,6 +37,15 @@ class JebaoDevice:
         self._state: Optional[DeviceState] = None
         self._speed: Optional[int] = None
         self._last_update: Optional[float] = None
+
+    @property
+    def host(self) -> str:
+        """Device IP address. Setting it takes effect on the next operation."""
+        return self._protocol.host
+
+    @host.setter
+    def host(self, value: str) -> None:
+        self._protocol.host = value
 
     @property
     def device_identifier(self) -> str:
@@ -87,25 +95,23 @@ class JebaoDevice:
         return self._state in (DeviceState.ON, DeviceState.OFF)
 
     async def connect(self, timeout: float = DEFAULT_TIMEOUT) -> None:
-        """Connect to device.
+        """Verify the device is reachable and fetch initial status.
 
-        Args:
-            timeout: Connection timeout
+        No connection is held open afterwards; every operation opens its own
+        short-lived session (the pump drops idle sessions after ~10 s).
 
         Raises:
             JebaoConnectionError: Connection failed
             JebaoAuthenticationError: Authentication failed
+            JebaoTimeoutError: Operation timed out
         """
-        await self._protocol.connect(timeout)
-        _LOGGER.info("%s Connected (%s)", self.device_identifier, self.model or "Unknown")
-
-        # Get initial status
-        await self.update()
+        await self.update(timeout)
+        _LOGGER.debug("%s Connected (%s)", self.device_identifier, self.model or "Unknown")
 
     async def disconnect(self) -> None:
         """Disconnect from device."""
         await self._protocol.disconnect()
-        _LOGGER.info("%s Disconnected", self.device_identifier)
+        _LOGGER.debug("%s Disconnected", self.device_identifier)
 
     @async_retry(max_attempts=3, delay=0.5)
     async def update(self, timeout: float = DEFAULT_TIMEOUT) -> None:
@@ -120,24 +126,27 @@ class JebaoDevice:
         """
         import time
 
-        if not self.is_connected:
-            raise JebaoConnectionError("Not connected")
-
         response = await self._protocol.request_status(timeout)
         status = self._protocol.parse_status(response)
+        if not status:
+            raise JebaoCommandError(f"Unparseable status response: {response[:24].hex()}")
 
-        if status:
-            self._state = DeviceState(status["state"])
-            self._speed = status["speed"]
-            self._last_update = time.time()
-            _LOGGER.debug(
-                "%s Status updated: state=%s, speed=%d%%",
-                self.device_identifier,
-                self._state.name,
-                self._speed,
-            )
-        else:
-            _LOGGER.warning("%s Failed to parse status response", self.device_identifier)
+        try:
+            state = DeviceState(status["state"])
+        except ValueError as err:
+            raise JebaoCommandError(
+                f"Unknown device state 0x{status['state']:02x}"
+            ) from err
+
+        self._state = state
+        self._speed = status["speed"]
+        self._last_update = time.time()
+        _LOGGER.debug(
+            "%s Status updated: state=%s, speed=%d%%",
+            self.device_identifier,
+            self._state.name,
+            self._speed,
+        )
 
     async def __aenter__(self):
         """Async context manager entry."""

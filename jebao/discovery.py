@@ -20,6 +20,20 @@ from .exceptions import JebaoError
 
 _LOGGER = logging.getLogger(__name__)
 
+DISCOVERY_SEND_COUNT = 3
+DISCOVERY_RESEND_INTERVAL = 0.7  # seconds
+
+# Every scan binds UDP 37479 (the port the official app uses). Two concurrent
+# scans in one process would split the replies between sockets, so serialise.
+_DISCOVERY_LOCK: Optional[asyncio.Lock] = None
+
+
+def _discovery_lock() -> asyncio.Lock:
+    global _DISCOVERY_LOCK
+    if _DISCOVERY_LOCK is None:
+        _DISCOVERY_LOCK = asyncio.Lock()
+    return _DISCOVERY_LOCK
+
 
 @dataclass
 class DiscoveredDevice:
@@ -136,6 +150,7 @@ class JebaoDiscovery:
             List of discovered devices on this interface
         """
         devices: List[DiscoveredDevice] = []
+        sender: Optional[asyncio.Task] = None
 
         # Get broadcast address for interface
         broadcast_addr = self._get_broadcast_address(interface)
@@ -173,10 +188,20 @@ class JebaoDiscovery:
                 UDP_DISCOVERY_PORT,
                 local_ip or "any",
             )
-            sock.sendto(
-                self.DISCOVERY_REQUEST, (broadcast_addr, UDP_DISCOVERY_PORT)
-            )
-            _LOGGER.debug("Discovery request sent: %s", self.DISCOVERY_REQUEST.hex())
+            # UDP is lossy (and pumps are on Wi-Fi): a single broadcast was
+            # regularly missed. Re-send a few times while listening.
+            async def _send_repeatedly() -> None:
+                for _ in range(DISCOVERY_SEND_COUNT):
+                    try:
+                        sock.sendto(
+                            self.DISCOVERY_REQUEST, (broadcast_addr, UDP_DISCOVERY_PORT)
+                        )
+                        _LOGGER.debug("Discovery request sent: %s", self.DISCOVERY_REQUEST.hex())
+                    except OSError as err:
+                        _LOGGER.debug("Discovery send failed on %s: %s", interface, err)
+                    await asyncio.sleep(min(DISCOVERY_RESEND_INTERVAL, timeout / DISCOVERY_SEND_COUNT))
+
+            sender = asyncio.create_task(_send_repeatedly())
 
             # Listen for responses
             end_time = asyncio.get_event_loop().time() + timeout
@@ -224,6 +249,12 @@ class JebaoDiscovery:
         except Exception as err:
             _LOGGER.error("Discovery failed on %s: %s", interface, err)
         finally:
+            if sender is not None:
+                sender.cancel()
+                try:
+                    await sender
+                except asyncio.CancelledError:
+                    pass
             if sock:
                 sock.close()
 
@@ -395,5 +426,6 @@ async def discover_devices(
         >>> devices = await discover_devices()
         >>> mdp20000_devices = [d for d in devices if d.is_mdp20000]
     """
-    discovery = JebaoDiscovery()
-    return await discovery.discover(timeout=timeout, interfaces=interfaces)
+    async with _discovery_lock():
+        discovery = JebaoDiscovery()
+        return await discovery.discover(timeout=timeout, interfaces=interfaces)
