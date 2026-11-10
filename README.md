@@ -5,7 +5,7 @@ Python library for controlling Jebao aquarium pumps over local network.
 ## Supported Models
 
 - **MDP-20000**: Variable-speed circulation pump (30-100% speed control)
-- **MD-4.4**: 4-channel dosing pump (planned)
+- **MD-4.4**: 4-channel dosing pump (manual head control and native schedules)
 
 ## Features
 
@@ -109,6 +109,31 @@ async def feed_mode_example():
         # Or cancel early
         # await pump.cancel_feed(resume_speed=75)
 ```
+
+### MD-4.4 Dosing Pump
+
+```python
+from jebao import MD44Device, MD44Dose
+
+async def configure_doser():
+    async with MD44Device(host="192.0.2.10") as doser:
+        channel = doser.channels[0]
+        await channel.start()
+        await channel.stop()
+
+        await channel.set_schedule(
+            day_interval=2,
+            doses=[
+                MD44Dose(hour=13, minute=11, milliliters=7),
+                MD44Dose(hour=14, minute=11, milliliters=8),
+                MD44Dose(hour=15, minute=11, milliliters=10),
+            ],
+            enabled=True,
+        )
+```
+
+Schedule times use a 24-hour clock. The MD-4.4 accepts whole-milliliter
+volumes, up to 20 slots per channel per day, and intervals from 1 to 255 days.
 
 ### Long-Running Connection
 
