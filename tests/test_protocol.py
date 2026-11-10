@@ -39,6 +39,10 @@ class FakePump:
         self.server = None
         self.port = None
         self.idle_close = None
+        self.passcode = PASSCODE
+        self.passcode_requests = 0
+        self.binding_closed = False  # stops handing out the passcode
+        self.peer_ports = []
 
     async def start(self):
         self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
@@ -64,6 +68,7 @@ class FakePump:
 
     async def _handle(self, reader, writer):
         self.connections += 1
+        self.peer_ports.append(writer.get_extra_info("peername")[1])
         fault = self.faults.pop(0) if self.faults else None
         try:
             if fault == "refuse":
@@ -74,12 +79,16 @@ class FakePump:
                 else:
                     cmd, payload = await self._read(reader)
                 if cmd == 0x0006:
+                    self.passcode_requests += 1
                     if fault == "stall_login":
                         await asyncio.sleep(2)
-                    writer.write(build_frame(0x0007, b"\x00\x0a" + PASSCODE))
+                    if self.binding_closed:
+                        writer.write(build_frame(0x0007, b"\x00\x00"))
+                    else:
+                        writer.write(build_frame(0x0007, b"\x00\x0a" + self.passcode))
                 elif cmd == 0x0008:
-                    assert payload == b"\x00\x0a" + PASSCODE
-                    writer.write(build_frame(0x0009, b"\x00"))
+                    ok = payload == len(self.passcode).to_bytes(2, "big") + self.passcode
+                    writer.write(build_frame(0x0009, b"\x00" if ok else b"\x01"))
                 elif cmd == 0x0090:
                     if fault == "stall_status":
                         await asyncio.sleep(2)
@@ -91,8 +100,8 @@ class FakePump:
                         # unsolicited report + stray ack before the real answer
                         writer.write(status_frame(0x10, 30))
                         writer.write(build_frame(0x0094, b"\x00"))
-                    if fault == "bad_state":
-                        writer.write(status_frame(0x00, 0))
+                    if fault == "bad_status":
+                        writer.write(build_frame(0x0091, b"\x03"))
                     else:
                         writer.write(status_frame(self.state, self.speed))
                 elif cmd == 0x0093:
@@ -173,8 +182,8 @@ async def test_unsolicited_frames_are_skipped(pump):
     assert d.speed == 80
 
 
-async def test_unknown_state_is_jebao_error_not_valueerror(pump):
-    pump.faults = ["bad_state"]
+async def test_malformed_status_is_jebao_error(pump):
+    pump.faults = ["bad_status"]
     d = device(pump)
     with pytest.raises(JebaoCommandError):
         await d.update()

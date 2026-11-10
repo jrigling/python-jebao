@@ -21,11 +21,33 @@ socket, so a timeout or partial read can never desynchronise a later request.
 
 All operations on one device are serialised by a lock so polls and commands
 never interleave on the wire.
+
+Session hygiene (newer Wi-Fi firmware, e.g. 4.1.4 / product key 6a5c47b3...)
+---------------------------------------------------------------------------
+Newer modules never time out an idle session and only have a handful of
+session slots, so a session whose close was lost on weak Wi-Fi occupies a slot
+until the pump is power-cycled. Two defences:
+
+* Sessions are closed with a TCP reset (``SO_LINGER`` 0), which frees the slot
+  at once and leaves no ``TIME_WAIT`` behind.
+* With ``local_port`` set, every session uses the same source port. If an
+  earlier reset was lost, the pump still holds that exact 4-tuple; the new SYN
+  makes it answer for the old session, our OS resets it, and the connect goes
+  through on the SYN retransmit (~1 s later) without consuming another slot.
+
+Passcode
+--------
+The pump's passcode is fixed (it changes only on factory reset), but some
+modules only hand it out for a while after power-up. The passcode learned at
+the first login is kept (``passcode``) and used directly afterwards; the pump
+is asked again only if that login is refused.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import socket
+import struct
 from typing import Optional, Tuple
 
 from .const import (
@@ -111,11 +133,27 @@ def split_frame(frame: bytes) -> Tuple[int, bytes]:
 class JebaoProtocol:
     """Low-level protocol implementation for Jebao devices."""
 
-    def __init__(self, host: str, port: int = 12416, device_id: Optional[str] = None):
-        """Initialize protocol handler."""
+    def __init__(
+        self,
+        host: str,
+        port: int = 12416,
+        device_id: Optional[str] = None,
+        passcode: Optional[bytes] = None,
+        local_port: Optional[int] = None,
+    ):
+        """Initialize protocol handler.
+
+        Args:
+            passcode: Passcode learned earlier (``self.passcode``); skips asking
+                the pump for it.
+            local_port: Fixed TCP source port for this device (see module docs).
+                Each client of a pump needs its own port.
+        """
         self.host = host
         self.port = port
         self.device_id = device_id
+        self.passcode: Optional[bytes] = passcode or None
+        self.local_port = local_port
         self._sequence = 1
         self._lock = asyncio.Lock()
         # True after the most recent operation succeeded. There is no
@@ -271,33 +309,79 @@ class JebaoProtocol:
     async def _noop(self, reader, writer) -> None:
         return None
 
-    async def _open(self, timeout: float):
-        """Open a TCP connection and authenticate. Returns (reader, writer)."""
+    async def _connect_socket(self, timeout: float):
+        """TCP connect with reset-on-close and (optionally) a fixed source port."""
+        loop = asyncio.get_running_loop()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port), timeout=timeout
-            )
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            if self.local_port:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    sock.bind(("", self.local_port))
+                except OSError as err:
+                    # Port taken by something else: fall back to an ephemeral one.
+                    _LOGGER.debug(
+                        "%s Can't bind source port %d (%s), using any port",
+                        self.device_identifier, self.local_port, err,
+                    )
+                    sock.close()
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                    )
+            sock.setblocking(False)
+            await asyncio.wait_for(loop.sock_connect(sock, (self.host, self.port)), timeout)
+            return await asyncio.open_connection(sock=sock)
         except asyncio.TimeoutError as err:
+            sock.close()
             raise JebaoTimeoutError(f"Connection to {self.host} timed out") from err
         except OSError as err:
+            sock.close()
             raise JebaoConnectionError(f"Failed to connect to {self.host}: {err}") from err
+        except BaseException:
+            sock.close()
+            raise
 
-        try:
-            await self._send(writer, PASSCODE_REQUEST)
-            payload = await self._read_until(reader, MSG_PASSCODE_RESPONSE)
-            # payload: [len hi][len lo][passcode...]
-            plen = int.from_bytes(payload[0:2], "big") if len(payload) >= 2 else 0
-            passcode = payload[2:2 + plen]
-            if plen == 0 or len(passcode) != plen:
-                raise JebaoAuthenticationError(f"Invalid passcode response: {payload.hex()}")
+    async def _login(self, reader, writer, passcode: bytes) -> bool:
+        """Send a login with ``passcode``. Returns True if the pump accepted it."""
+        await self._send(
+            writer, build_frame(0x0008, len(passcode).to_bytes(2, "big") + passcode)
+        )
+        payload = await self._read_until(reader, MSG_LOGIN_SUCCESS)
+        return payload[:1] in (b"", b"\x00")
 
-            await self._send(
-                writer,
-                build_frame(0x0008, len(passcode).to_bytes(2, "big") + passcode),
+    async def _request_passcode(self, reader, writer) -> bytes:
+        await self._send(writer, PASSCODE_REQUEST)
+        payload = await self._read_until(reader, MSG_PASSCODE_RESPONSE)
+        # payload: [len hi][len lo][passcode...]
+        plen = int.from_bytes(payload[0:2], "big") if len(payload) >= 2 else 0
+        passcode = payload[2:2 + plen]
+        if plen == 0 or len(passcode) != plen:
+            raise JebaoAuthenticationError(
+                f"{self.device_identifier} The pump didn't hand out its passcode. "
+                "Some pumps only do this for a while after power-up: power-cycle "
+                "it once so the passcode can be learned."
             )
-            payload = await self._read_until(reader, MSG_LOGIN_SUCCESS)
-            if payload[:1] not in (b"", b"\x00"):
-                raise JebaoAuthenticationError(f"Login rejected (result {payload[:1].hex()})")
+        return passcode
+
+    async def _open(self, timeout: float):
+        """Open a TCP connection and authenticate. Returns (reader, writer)."""
+        reader, writer = await self._connect_socket(timeout)
+        try:
+            if self.passcode:
+                if await self._login(reader, writer, self.passcode):
+                    _LOGGER.debug("%s Authenticated (saved passcode)", self.device_identifier)
+                    return reader, writer
+                _LOGGER.info(
+                    "%s Saved passcode refused, asking the pump for it", self.device_identifier
+                )
+                self.passcode = None
+
+            passcode = await self._request_passcode(reader, writer)
+            if not await self._login(reader, writer, passcode):
+                raise JebaoAuthenticationError(f"{self.device_identifier} Login rejected")
+            self.passcode = passcode
             _LOGGER.debug("%s Authenticated", self.device_identifier)
             return reader, writer
         except BaseException:

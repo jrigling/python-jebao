@@ -9,6 +9,7 @@ import netifaces
 
 from .const import (
     DISCOVERY_TIMEOUT,
+    GIZWITS_KEYS_MDP20000,
     MODEL_MD44,
     MODEL_MDP20000,
     PRODUCT_KEY_MD44,
@@ -370,31 +371,47 @@ class JebaoDiscovery:
                 _LOGGER.debug("Invalid header")
                 return None
 
-            # Extract fields with length-prefixed parsing
-            # Device ID: 2-byte length at 8-9, then string data
-            device_id_length = int.from_bytes(data[8:10], "big")
-            device_id_start = 10
-            device_id_end = device_id_start + device_id_length
-            device_id = data[device_id_start:device_id_end].decode("ascii")
+            # After the 8-byte header come length-prefixed (2 bytes, big
+            # endian) fields: device ID, MAC (6 bytes), Wi-Fi module firmware
+            # version (8 chars; historically treated as the product key) and,
+            # on all modules seen so far, the 32-char GizWits product key.
+            fields = []
+            pos = 8
+            while len(fields) < 4 and pos + 2 <= len(data):
+                length = int.from_bytes(data[pos : pos + 2], "big")
+                pos += 2
+                if pos + length > len(data):
+                    break
+                fields.append(data[pos : pos + length])
+                pos += length
+            if len(fields) < 3:
+                _LOGGER.debug("Truncated discovery response from %s", ip_address)
+                return None
 
-            # MAC address follows device ID (6 bytes)
-            mac_start = device_id_end + 2  # Skip 2-byte separator
-            mac_bytes = data[mac_start : mac_start + 6]
-            mac_address = ":".join(f"{b:02x}" for b in mac_bytes)
+            device_id = fields[0].decode("ascii")
+            mac = fields[1]
+            if len(mac) == 12:  # some modules send the MAC as hex text
+                mac = bytes.fromhex(mac.decode("ascii"))
+            mac_address = ":".join(f"{b:02x}" for b in mac[:6])
+            module_version = fields[2].rstrip(b"\x00").decode("ascii", "replace")
+            gizwits_key = (
+                fields[3].rstrip(b"\x00").decode("ascii", "replace") if len(fields) > 3 else ""
+            )
+            product_key = gizwits_key or module_version
 
-            # Product key is 8 bytes as ASCII, after device_id + MAC + separators
-            # After device_id (var len) + separator (2) + MAC (6) + separator (2)
-            product_key_start = device_id_end + 2 + 6 + 2
-            product_key = data[product_key_start : product_key_start + 8].rstrip(b"\x00").decode("ascii")
-
-            # Determine model from product key
-            if product_key in PRODUCT_KEYS_MDP20000:
+            if gizwits_key:
+                if gizwits_key in GIZWITS_KEYS_MDP20000:
+                    model = MODEL_MDP20000
+                else:
+                    _LOGGER.debug("Unknown product key %s at %s", gizwits_key, ip_address)
+                    model = f"Unknown ({gizwits_key})"
+            elif module_version in PRODUCT_KEYS_MDP20000:
                 model = MODEL_MDP20000
-            elif product_key == PRODUCT_KEY_MD44:
+            elif module_version == PRODUCT_KEY_MD44:
                 model = MODEL_MD44
             else:
-                _LOGGER.warning("Unknown product key: %s", product_key)
-                model = f"Unknown ({product_key})"
+                _LOGGER.debug("Unknown product key %s at %s", module_version, ip_address)
+                model = f"Unknown ({module_version})"
 
             return DiscoveredDevice(
                 device_id=device_id,
@@ -402,6 +419,7 @@ class JebaoDiscovery:
                 product_key=product_key,
                 ip_address=ip_address,
                 model=model,
+                firmware_version=module_version or None,
             )
 
         except Exception as err:

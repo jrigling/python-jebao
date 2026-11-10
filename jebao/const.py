@@ -37,9 +37,25 @@ PRODUCT_KEY_MD44 = "04020B27"  # Assumed, verify if needed
 # All known product keys that identify an MDP-20000 (across hardware revisions)
 PRODUCT_KEYS_MDP20000 = frozenset({PRODUCT_KEY_MDP20000, PRODUCT_KEY_MDP20000_V2})
 
+# The 8-character values above are really the Wi-Fi module's firmware version,
+# which is shared across products (an ECP-150M wave pump reports 04020B28 too).
+# The GizWits product key proper is the 32-character field that follows it in
+# the discovery reply; models are identified by that when it is present.
+GIZWITS_KEY_MDP20000 = "02039876751049deb404d1d89221ec4b"  # MDP-20000, module 4.1.2
+GIZWITS_KEY_MDP_V2 = "6a5c47b3ea364ecb841b47f5997a1775"  # newer MDP-20000/15000/3500/2500
+GIZWITS_KEYS_MDP20000 = frozenset({GIZWITS_KEY_MDP20000, GIZWITS_KEY_MDP_V2})
+
 # Model identifiers
 MODEL_MDP20000 = "MDP-20000"
 MODEL_MD44 = "MD-4.4"
+
+
+# The status state byte is a set of flags (GizWits datapoints): bit 0 SwitchON,
+# bit 1 Mode (front panel / wireless), bit 2 FeedSwitch, bit 3 TimerON (the
+# app's Program schedule), bits 4-5 the schedule's current AutoMode.
+STATE_BIT_ON = 0x01
+STATE_BIT_FEED = 0x04
+STATE_BIT_PROGRAM = 0x08
 
 
 class DeviceState(IntEnum):

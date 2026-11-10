@@ -28,15 +28,26 @@ class MDP20000Device(JebaoDevice):
     - Program mode detection and exit
     """
 
-    def __init__(self, host: str, port: int = 12416, device_id: Optional[str] = None):
+    def __init__(
+        self,
+        host: str,
+        port: int = 12416,
+        device_id: Optional[str] = None,
+        passcode: Optional[bytes] = None,
+        local_port: Optional[int] = None,
+    ):
         """Initialize MDP-20000 device.
 
         Args:
             host: Device IP address
             port: TCP port (default 12416)
             device_id: Device ID (from discovery)
+            passcode: Passcode saved from an earlier session (``device.passcode``)
+            local_port: Fixed TCP source port for this pump
         """
-        super().__init__(host, port, device_id, MODEL_MDP20000)
+        super().__init__(
+            host, port, device_id, MODEL_MDP20000, passcode=passcode, local_port=local_port
+        )
         self._feed_duration: int = 1  # Last configured feed duration
 
     async def ensure_manual_mode(self, timeout: float = COMMAND_TIMEOUT) -> None:
@@ -74,6 +85,16 @@ class MDP20000Device(JebaoDevice):
         else:
             _LOGGER.debug("Device already in manual mode")
 
+    async def _leave_program_mode(self, timeout: float) -> None:
+        """A manual command was asked for: leave the pump's own schedule first.
+
+        Uses the state from the last update; HA no longer forces manual mode at
+        startup, so a pump can keep running its schedule until someone takes
+        manual control.
+        """
+        if self.is_program_mode:
+            await self.ensure_manual_mode(timeout)
+
     async def turn_on(self, timeout: float = COMMAND_TIMEOUT) -> None:
         """Turn pump on.
 
@@ -86,6 +107,7 @@ class MDP20000Device(JebaoDevice):
         Note:
             Session setup is retried; the command itself is sent at most once.
         """
+        await self._leave_program_mode(timeout)
         _LOGGER.info("%s Turning on pump", self.device_identifier)
 
         await self._protocol.send_control_command(
@@ -109,6 +131,7 @@ class MDP20000Device(JebaoDevice):
         Note:
             Session setup is retried; the command itself is sent at most once.
         """
+        await self._leave_program_mode(timeout)
         _LOGGER.info("%s Turning off pump", self.device_identifier)
 
         await self._protocol.send_control_command(
@@ -140,6 +163,7 @@ class MDP20000Device(JebaoDevice):
                 f"Speed must be between {MIN_SPEED} and {MAX_SPEED}, got {percentage}"
             )
 
+        await self._leave_program_mode(timeout)
         _LOGGER.info("%s Setting speed to %d%%", self.device_identifier, percentage)
 
         await self._protocol.send_control_command(
@@ -206,12 +230,11 @@ class MDP20000Device(JebaoDevice):
         Note:
             Session setup is retried; the command itself is sent at most once.
         """
-        # Verify device is in manual mode
         await self.update()
-        if not self.is_manual_mode:
-            raise JebaoInvalidStateError(
-                f"Cannot start feed from state {self._state.name}"
-            )
+        if self.is_program_mode:
+            await self.ensure_manual_mode(timeout)
+        if self.is_feed_mode:
+            raise JebaoInvalidStateError("Already in feed mode")
 
         if minutes is not None:
             if not MIN_FEED_DURATION <= minutes <= MAX_FEED_DURATION:
