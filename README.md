@@ -6,6 +6,7 @@ Python library for controlling Jebao aquarium pumps over local network.
 
 - **MDP-20000**: Variable-speed circulation pump (30-100% speed control)
 - **MD-4.4**: 4-channel dosing pump (planned)
+- **MD-4.5**: 5-channel WiFi/BLE dosing pump (per-channel on/off and status)
 
 ## Features
 
@@ -216,6 +217,21 @@ device.product_key    # Product key
 device.model          # Model name (e.g., "MDP-20000")
 device.is_mdp20000    # True if MDP-20000
 device.is_md44        # True if MD-4.4
+device.is_md45        # True if MD-4.5
+```
+
+### MD45Device
+
+```python
+from jebao import MD45Device
+
+pump = MD45Device("192.168.1.100")
+await pump.connect()
+await pump.turn_on_channel(1)     # channels 1-5; sent at most once
+await pump.turn_off_channel(1)
+await pump.update()               # the pump takes ~1 s to reflect a command
+pump.is_channel_on(1)             # bool
+pump.channel_states               # [bool] * 5 for channels 1-5
 ```
 
 ## Home Assistant Integration
@@ -317,6 +333,11 @@ This library builds upon the excellent work from:
 - [jebao-dosing-pump-md-4.4](https://github.com/tancou/jebao-dosing-pump-md-4.4) by [@tancou](https://github.com/tancou) - Original Node.js implementation for MD 4.4 pumps that provided the foundation for understanding the GizWits protocol
 
 Protocol for MDP-20000 was reverse-engineered through packet capture analysis of the official Jebao mobile app.
+
+The MD-4.5 channel command was reverse-engineered from the pump's own traffic to
+the GizWits cloud relay (MQTT on port 1883, unencrypted). The official app
+controls this pump through the cloud even though it accepts the same local
+passcode/login handshake on TCP 12416 as the other models.
 
 ## Disclaimer
 

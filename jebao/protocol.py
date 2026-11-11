@@ -54,6 +54,7 @@ from .const import (
     COMMAND_TIMEOUT,
     CONTROL_COMMAND_SIZE,
     DEFAULT_TIMEOUT,
+    MD45_CHANNEL_COMMAND_SIZE,
     MSG_CONTROL_OR_EXTENDED_REQUEST,
     MSG_CONTROL_RESPONSE_OR_EXTENDED_DATA,
     MSG_DATA_RESPONSE_SIMPLE,
@@ -229,7 +230,26 @@ class JebaoProtocol:
             "%s Control command opcode1=0x%02x opcode2=0x%02x p1=%d p2=%d",
             self.device_identifier, opcode1, opcode2, param1, param2,
         )
+        await self._send_command_frame(command, timeout)
 
+    async def send_channel_command(
+        self, channel: int, on: bool, timeout: float = COMMAND_TIMEOUT
+    ) -> None:
+        """Switch one channel of an MD-4.5-style multi-channel doser on or off.
+
+        Same delivery rules as ``send_control_command``: session setup is
+        retried, the command itself is sent at most once.
+        """
+        mask = 1 << channel
+        state = mask if on else 0x00
+        _LOGGER.debug(
+            "%s Channel command channel=%d mask=0x%02x state=0x%02x",
+            self.device_identifier, channel, mask, state,
+        )
+        await self._send_command_frame(self._build_channel_command(mask, state), timeout)
+
+    async def _send_command_frame(self, command: bytes, timeout: float) -> None:
+        """Deliver one command frame and wait (best effort) for its ACK."""
         async with self._lock:
             session = None
             last_err: Optional[Exception] = None
@@ -466,4 +486,24 @@ class JebaoProtocol:
         payload[15] = param2
         frame = build_frame(MSG_CONTROL_OR_EXTENDED_REQUEST, bytes(payload))
         assert len(frame) == CONTROL_COMMAND_SIZE
+        return frame
+
+    def _build_channel_command(self, channel_mask: int, state: int) -> bytes:
+        """Build the MD-4.5's 808-byte channel on/off frame (cmd 0x0093).
+
+        Payload: [seq: 4 bytes BE][0x01][4 zero bytes][mask][2 zero bytes][state][zeros...]
+
+        ``mask`` selects the channel (``1 << channel``). To switch it on,
+        ``state`` is the mask itself (not 0x01); 0x00 switches it off. Taken
+        from the pump's own traffic to the GizWits cloud relay. The MD-4.4
+        layout above has no effect on this pump.
+        """
+        payload = bytearray(MD45_CHANNEL_COMMAND_SIZE - 9)  # 4 hdr + 2 varint + 3 flag/cmd
+        payload[0:4] = self._sequence.to_bytes(4, "big")
+        self._sequence = (self._sequence + 1) & 0xFFFFFFFF or 1
+        payload[4] = 0x01
+        payload[9] = channel_mask
+        payload[12] = state
+        frame = build_frame(MSG_CONTROL_OR_EXTENDED_REQUEST, bytes(payload))
+        assert len(frame) == MD45_CHANNEL_COMMAND_SIZE
         return frame
