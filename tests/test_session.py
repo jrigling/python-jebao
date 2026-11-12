@@ -95,15 +95,7 @@ async def test_manual_command_leaves_schedule_first(pump):
     pump.state = 0x18
     d = device(pump)
     await d.update()
-
-    async def leave():  # pump applies EXIT_PROGRAM
-        while not pump.commands:
-            await asyncio.sleep(0.01)
-        pump.state = 0x11
-
-    task = asyncio.create_task(leave())
     await d.set_speed(50)
-    await task
     assert pump.commands[0][0] == 0x28  # EXIT_PROGRAM ...
     assert pump.commands[-1] == bytes([0x20, 0, 50, 0])  # ... then the speed
 

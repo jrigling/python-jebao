@@ -43,6 +43,7 @@ class FakePump:
         self.passcode_requests = 0
         self.binding_closed = False  # stops handing out the passcode
         self.peer_ports = []
+        self.writers = set()
 
     async def start(self):
         self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
@@ -50,6 +51,10 @@ class FakePump:
 
     async def stop(self):
         self.server.close()
+        # Since Python 3.12, wait_closed() also waits for open connections.
+        # Cut them off so a reset the OS never delivers can't hang teardown.
+        for w in list(self.writers):
+            w.transport.abort()
         await self.server.wait_closed()
 
     async def _read(self, reader):
@@ -68,6 +73,7 @@ class FakePump:
 
     async def _handle(self, reader, writer):
         self.connections += 1
+        self.writers.add(writer)
         self.peer_ports.append(writer.get_extra_info("peername")[1])
         fault = self.faults.pop(0) if self.faults else None
         try:
@@ -106,6 +112,8 @@ class FakePump:
                         writer.write(status_frame(self.state, self.speed))
                 elif cmd == 0x0093:
                     self.commands.append(payload[12:16])
+                    if payload[12] == 0x28:  # EXIT_PROGRAM: leave schedule, run manually
+                        self.state = (self.state & ~0x08) | 0x01
                     if fault == "drop_ack":
                         return
                     writer.write(build_frame(0x0094, b"\x00"))
@@ -115,6 +123,7 @@ class FakePump:
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError):
             pass
         finally:
+            self.writers.discard(writer)
             writer.close()
 
 
