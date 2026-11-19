@@ -158,7 +158,8 @@ class ScheduleSlot:
 
     def validate_for_write(self) -> None:
         """Stricter checks the app applies to slots it saves."""
-        if (self.start_hour, self.start_minute) == (self.end_hour % 24, self.end_minute):
+        start, end = self._minutes()
+        if start == end:  # 00:00-00:00 (or 24:00) is the whole day, the app's default
             raise ValueError(f"Schedule slot {self.start}-{self.end} has no length")
         if self.mode == AutoMode.RUN and not 30 <= self.value <= 100:
             raise ValueError(f"Schedule speed must be 30-100, got {self.value}")

@@ -120,6 +120,11 @@ def test_slot_validation():
                                      {"start": "11:00", "end": "13:00", "speed": 50}]))
     with pytest.raises(ValueError):  # no length
         schedule_values(parse_slots([{"start": "8:00", "end": "8:00", "speed": 50}]))
+    # A slot from midnight to midnight is the whole day (the app's default schedule)
+    for end in ("0:00", "24:00"):
+        whole_day = parse_slots([{"start": "0:00", "end": end, "speed": 100}])
+        assert schedule_values(whole_day)["slot00"][:4] == bytes((0, 0, int(end[:-3]), 0))
+        assert whole_day[0].covers(13, 30)
     with pytest.raises(ValueError):  # below the pumps' minimum speed
         schedule_values(parse_slots([{"start": "8:00", "end": "9:00", "speed": 20}]))
     with pytest.raises(ValueError):
