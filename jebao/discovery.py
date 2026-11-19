@@ -447,3 +447,59 @@ async def discover_devices(
     async with _discovery_lock():
         discovery = JebaoDiscovery()
         return await discovery.discover(timeout=timeout, interfaces=interfaces)
+
+
+async def query_device(
+    host: str, timeout: float = DISCOVERY_TIMEOUT
+) -> Optional[DiscoveredDevice]:
+    """Ask one pump for its discovery reply.
+
+    Unicast, so it works across subnets and for pumps added by IP address,
+    where a broadcast scan can't reach. Uses an ephemeral port, so it doesn't
+    need the discovery lock.
+
+    Args:
+        host: The pump's IP address
+        timeout: How long to wait for the reply
+
+    Returns:
+        The pump's details, or None if it didn't answer
+    """
+    loop = asyncio.get_running_loop()
+    reply: asyncio.Future = loop.create_future()
+
+    class _Protocol(asyncio.DatagramProtocol):
+        def datagram_received(self, data, addr):
+            if addr[0] == host and not reply.done():
+                reply.set_result(data)
+
+        def error_received(self, exc):
+            if not reply.done():
+                reply.set_exception(exc)
+
+    try:
+        transport, _ = await loop.create_datagram_endpoint(
+            _Protocol, remote_addr=(host, UDP_DISCOVERY_PORT)
+        )
+    except OSError as err:
+        _LOGGER.debug("Discovery query to %s failed: %s", host, err)
+        return None
+    try:
+        for _ in range(DISCOVERY_SEND_COUNT):
+            transport.sendto(JebaoDiscovery.DISCOVERY_REQUEST)
+            try:
+                data = await asyncio.wait_for(
+                    asyncio.shield(reply), timeout / DISCOVERY_SEND_COUNT
+                )
+                break
+            except asyncio.TimeoutError:
+                continue
+        else:
+            _LOGGER.debug("No discovery reply from %s", host)
+            return None
+    except OSError as err:
+        _LOGGER.debug("Discovery query to %s failed: %s", host, err)
+        return None
+    finally:
+        transport.close()
+    return JebaoDiscovery._parse_discovery_response(data, host)

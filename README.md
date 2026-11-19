@@ -5,13 +5,18 @@ Python library for controlling Jebao aquarium pumps over local network.
 ## Supported Models
 
 - **MDP-20000**: Variable-speed circulation pump (30-100% speed control)
+- **MDP-15000**, **MDP-5000**, **MDP-3500**, **MDP-2500**: same GizWits product key
+  (`6a5c47b3ea364ecb841b47f5997a1775`) and datapoints as newer MDP-20000s. They can't be told
+  apart over the network (discovery reports them all as MDP-20000), and all work with
+  `MDP20000Device`.
 - **MD-4.4**: 4-channel dosing pump (planned)
 
 ## Features
 
 - 🔍 **UDP Discovery** - Automatic device discovery with multi-subnet support
 - 🔌 **Local Control** - Direct TCP control, no cloud dependency
-- ⚡ **Full Protocol** - On/Off, speed control, feed mode, status monitoring
+- ⚡ **Full Protocol** - On/Off, speed control, feed mode, the pump's own 48-slot daily schedule,
+  clock and fault bits; every datapoint decoded (`jebao.datapoints`)
 - 🏠 **Home Assistant Ready** - Designed for HA integration
 - 🔒 **Type Safe** - Full type hints for better IDE support
 
@@ -173,12 +178,37 @@ pump.is_manual_mode  # True if ON or OFF
 - `async set_speed(percentage)` - Set speed (30-100%)
 
 #### Feed Mode
-- `async set_feed_duration(minutes)` - Configure feed timer (1-10 minutes)
-- `async start_feed(minutes=None)` - Start feed mode
+- `async set_feed_time(minutes)` - Set the feed pause (1-60 minutes) without starting it
+- `async set_feed_duration(minutes)` - Older command for the same; also ends feed mode
+- `async start_feed(minutes=None)` - Pause the pump (default: the pump's own feed time)
 - `async cancel_feed(resume_speed=None)` - Cancel feed and resume
 
-#### Program Mode
+#### Schedule ("Program" in the app) and clock
+- `async set_schedule(slots, enabled=None)` - Replace the daily schedule: up to 48 `ScheduleSlot`s
+  (start, end, mode RUN/FEED/OFF, speed 30-100 for RUN), not overlapping; a slot may run past
+  midnight. Unused slots are cleared.
+- `async set_schedule_enabled(enabled)` - Turn the schedule on (also tells the pump which slot is
+  active now, as the app does) or off (keeps the current speed)
+- `async set_clock(when=None)` - Set the pump's clock, which the schedule runs on. Nothing sets it
+  except the app's "Set Time"; the clock datapoint reads back the last value written.
 - `async ensure_manual_mode()` - Exit Program mode if active
+
+```python
+from jebao import parse_slots
+
+await pump.set_clock()
+await pump.set_schedule(
+    parse_slots([
+        {"start": "08:00", "end": "20:00", "mode": "run", "speed": 80},
+        {"start": "20:00", "end": "08:00", "mode": "run", "speed": 40},
+    ]),
+    enabled=True,
+)
+```
+
+#### Any datapoint
+- `async write(**changes)` - Write datapoints by name, e.g. `write(motor_speed=60, timer_on=False)`
+  (see `jebao/datapoints.py` for the layout). Like the other commands, it is sent at most once.
 
 #### Properties
 - `state: DeviceState` - Current state
@@ -188,11 +218,14 @@ pump.is_manual_mode  # True if ON or OFF
 - `is_feed_mode: bool` - In feed mode
 - `is_program_mode: bool` - In program mode
 - `is_manual_mode: bool` - In manual mode
+- `status: PumpStatus` - Every datapoint from the last read: `switch_on`, `feed_switch`,
+  `timer_on`, `auto_mode`/`auto_gears` (what the schedule is doing), `motor_speed`, `feed_time`,
+  `schedule`/`schedule_slots`, `clock`, `faults`
 
 ### Discovery
 
 ```python
-from jebao import JebaoDiscovery, discover_devices
+from jebao import JebaoDiscovery, discover_devices, query_device
 
 # Convenience function
 devices = await discover_devices(timeout=2.0, interfaces=['eth0'])
@@ -204,6 +237,9 @@ devices = await discovery.discover(timeout=2.0, interfaces=['eth0'])
 # Filter by model
 mdp20000_devices = [d for d in devices if d.is_mdp20000]
 md44_devices = [d for d in devices if d.is_md44]
+
+# Ask one pump directly (unicast; works across subnets and for pumps added by IP)
+device = await query_device("192.168.30.51")
 ```
 
 ### DiscoveredDevice

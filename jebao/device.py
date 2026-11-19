@@ -10,6 +10,7 @@ from .const import (
     STATE_BIT_PROGRAM,
     DeviceState,
 )
+from .datapoints import PumpStatus
 from .exceptions import JebaoCommandError
 from .protocol import JebaoProtocol
 from .retry import async_retry
@@ -60,6 +61,7 @@ class JebaoDevice:
         self._flags: Optional[int] = None
         self._state: Optional[DeviceState] = None
         self._speed: Optional[int] = None
+        self._status: Optional[PumpStatus] = None
         self._last_update: Optional[float] = None
 
     @property
@@ -106,6 +108,15 @@ class JebaoDevice:
     def speed(self) -> Optional[int]:
         """Get current speed percentage (30-100)."""
         return self._speed
+
+    @property
+    def status(self) -> Optional[PumpStatus]:
+        """Every datapoint from the last status read (schedule, clock, faults, ...).
+
+        None until the first update, or if the pump's status frame is too short
+        to carry the full datapoint block.
+        """
+        return self._status
 
     def _flag(self, bit: int) -> bool:
         return self._flags is not None and bool(self._flags & bit)
@@ -165,16 +176,25 @@ class JebaoDevice:
             JebaoConnectionError: Not connected
             JebaoTimeoutError: Request timed out
         """
-        import time
-
         response = await self._protocol.request_status(timeout)
-        status = self._protocol.parse_status(response)
-        if not status:
+        if not self._apply_status_frame(response):
             raise JebaoCommandError(f"Unparseable status response: {response[:24].hex()}")
 
+    def _apply_status_frame(self, frame: Optional[bytes]) -> bool:
+        """Update state from a status frame (a read reply or a pushed report)."""
+        import time
+
+        status = self._protocol.parse_status(frame) if frame else None
+        if not status:
+            return False
         self._flags = status["state"]
         self._state = state_from_flags(self._flags)
         self._speed = status["speed"]
+        try:
+            self._status = self._protocol.parse_values(frame)
+        except ValueError as err:
+            _LOGGER.debug("%s Could not decode datapoints: %s", self.device_identifier, err)
+            self._status = None
         self._last_update = time.time()
         _LOGGER.debug(
             "%s Status updated: state=%s (0x%02x), speed=%d%%",
@@ -183,6 +203,7 @@ class JebaoDevice:
             self._flags,
             self._speed,
         )
+        return True
 
     async def __aenter__(self):
         """Async context manager entry."""
