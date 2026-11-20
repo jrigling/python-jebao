@@ -5,6 +5,12 @@ product key 6a5c47b3ea364ecb841b47f5997a1775 (the key MDP-15000/MDP-3500/MDP-500
 newer MDP-20000 pumps report in discovery) at
 https://api.gizwits.com/app/datapoint?product_key=6a5c47b3ea364ecb841b47f5997a1775
 
+Older MDP-20000s (module firmware 4.1.2) report key 02039876751049deb404d1d89221ec4b.
+Its published layout is identical: the same 66 datapoints at the same bit and byte
+positions. The Jebao app (3.4.25) bundles both definitions, and its product table tells
+6a5c47b3... pumps to use the 02039876... control panel, so one panel, which sets the
+clock and schedule, drives both.
+
 Status frames (0x0091) carry the 302-byte values area after the action byte:
 
     byte 0      bit 0 SwitchON, bit 1 Mode (0 front panel, 1 wireless), bit 2 FeedSwitch,
@@ -34,7 +40,7 @@ from datetime import datetime
 from enum import IntEnum
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
-# Product key from the discovery reply of pumps that use this layout
+# Product key from the discovery reply of pumps that use this layout (and see above)
 PRODUCT_KEY_RETURN_PUMP = "6a5c47b3ea364ecb841b47f5997a1775"
 
 VALUES_SIZE = 302  # values area in a status frame

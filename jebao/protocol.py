@@ -349,7 +349,7 @@ class JebaoProtocol:
     def _build_write(sequence: int, payload: bytes) -> bytes:
         """Write frame: [sequence: 4 bytes BE][action 0x01][attr flags][values]."""
         return build_frame(
-            MSG_CONTROL_OR_EXTENDED_REQUEST, sequence.to_bytes(4, "big") + b"" + payload
+            MSG_CONTROL_OR_EXTENDED_REQUEST, sequence.to_bytes(4, "big") + b"\x01" + payload
         )
 
     @staticmethod
