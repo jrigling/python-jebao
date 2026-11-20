@@ -44,10 +44,17 @@ PRODUCT_KEYS_MDP20000 = frozenset({PRODUCT_KEY_MDP20000, PRODUCT_KEY_MDP20000_V2
 GIZWITS_KEY_MDP20000 = "02039876751049deb404d1d89221ec4b"  # MDP-20000, module 4.1.2
 GIZWITS_KEY_MDP_V2 = "6a5c47b3ea364ecb841b47f5997a1775"  # newer MDP-20000/15000/3500/2500
 GIZWITS_KEYS_MDP20000 = frozenset({GIZWITS_KEY_MDP20000, GIZWITS_KEY_MDP_V2})
+GIZWITS_KEY_MD45 = "5ab6019f2dbb4ae7a42b48d2b8ce0530"  # MD-4.5 5-channel WiFi/BLE doser
 
 # Model identifiers
 MODEL_MDP20000 = "MDP-20000"
 MODEL_MD44 = "MD-4.4"
+MODEL_MD45 = "MD-4.5"
+
+# MD-4.5: 5 independent on/off dosing channels (no speed or feed mode). Its
+# channel command is an 808-byte 0x0093 frame, longer than the pumps' 323.
+MD45_NUM_CHANNELS = 5
+MD45_CHANNEL_COMMAND_SIZE = 808
 
 
 # The status state byte is a set of flags (GizWits datapoints): bit 0 SwitchON,
