@@ -401,7 +401,8 @@ def _parse_hhmm(value) -> Tuple[int, int]:
 #     byte 4        FeedTime, minutes
 #     bytes 5-7     AutoFlow, AutoFrequency, AutoFeedTime (the current segment's)
 #     bytes 8-391   AutoTime00..AutoTime47, 8-byte program segments (0xEE unused)
-#     bytes 392-395 YMDData, bytes 396-399 HMSData (as on the MDP pumps)
+#     bytes 392-395 YMDData, bytes 396-399 HMSData (as on the MDP pumps: they read
+#                   back the last time set and don't tick)
 #     byte 400      fault bits, in the same order as FAULT_NAMES
 #
 # Read-only for now: nothing here encodes a write.
@@ -493,7 +494,11 @@ class ECP150MSegment:
 
 @dataclass(frozen=True)
 class ECP150MStatus:
-    """Decoded ECP-150M status (values area of a 0x0094 read reply)."""
+    """Decoded ECP-150M status (values area of a 0x0094 read reply).
+
+    clock is the last time set on the pump (from the app), not the current time:
+    it reads back unchanged until it's set again.
+    """
 
     flags: int
     switch_on: bool

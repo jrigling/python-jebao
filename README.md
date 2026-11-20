@@ -288,7 +288,8 @@ status.mode                       # WaveMode: CLASSIC, SINE, RANDOM, CONSTANT
 status.frequency, status.feed_time
 status.linkage                    # Linkage: INDEPENDENT, MASTER, SLAVE
 status.schedule_slots             # [ECP150MSegment] in use
-status.clock, status.faults
+status.clock                      # last time set from the app (doesn't tick)
+status.faults
 ```
 
 ## Home Assistant Integration
