@@ -38,7 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Type, TypeVar, Union
 
 # Product key from the discovery reply of pumps that use this layout (and see above)
 PRODUCT_KEY_RETURN_PUMP = "6a5c47b3ea364ecb841b47f5997a1775"
@@ -445,7 +445,10 @@ class WaveAutoMode(IntEnum):
     FEED = 5
 
 
-def _enum_or_none(enum, value: int):
+_E = TypeVar("_E", bound=IntEnum)
+
+
+def _enum_or_none(enum: Type[_E], value: int) -> Optional[_E]:
     return enum(value) if value in tuple(enum) else None
 
 

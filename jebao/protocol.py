@@ -231,7 +231,8 @@ class JebaoProtocol:
             return await self._read_until(reader, MSG_CONTROL_RESPONSE_OR_EXTENDED_DATA)
 
         async with self._lock:
-            return await self._run(_op, timeout)
+            payload: bytes = await self._run(_op, timeout)
+            return payload
 
     async def send_control_command(
         self,

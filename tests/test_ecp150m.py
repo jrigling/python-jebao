@@ -1,10 +1,9 @@
 """ECP-150M: status decoding, the read request, discovery."""
+
 import asyncio
 from datetime import datetime
 
 import pytest
-from test_protocol import PASSCODE
-from test_session import REPLY_ECP
 
 from jebao import DeviceState, ECP150MDevice
 from jebao.datapoints import (
@@ -17,6 +16,9 @@ from jebao.datapoints import (
 from jebao.discovery import JebaoDiscovery
 from jebao.exceptions import JebaoCommandError
 from jebao.protocol import build_frame, split_frame
+
+from test_protocol import PASSCODE
+from test_session import REPLY_ECP
 
 # Full 401-byte values areas read from two pumps (issue #5)
 # Pump 1: Program, Sine, current segment Sine 30 %, frequency 100, feed 10 min
@@ -96,8 +98,12 @@ def test_linkage_slave(flags, auto_mode):
 
 @pytest.mark.parametrize(
     "flags,mode",
-    [(0x01, WaveMode.CLASSIC), (0x21, WaveMode.SINE), (0x41, WaveMode.RANDOM),
-     (0x61, WaveMode.CONSTANT)],
+    [
+        (0x01, WaveMode.CLASSIC),
+        (0x21, WaveMode.SINE),
+        (0x41, WaveMode.RANDOM),
+        (0x61, WaveMode.CONSTANT),
+    ],
 )
 def test_mode_bits(flags, mode):
     assert decode(with_flags(flags)).mode is mode
