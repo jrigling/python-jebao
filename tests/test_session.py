@@ -123,7 +123,7 @@ REPLY_MDP3500 = REPLY_414.replace(b"04D30Q34", b"04020826")
         (REPLY_412, "MDP-20000", "t4RoEiuukqgYeC8hwF7QUS", "44:17:93:2a:5c:5f"),
         (REPLY_414, "MDP-20000", "vrTf9Us8TeDaXYX9y8PBJ7", "24:ec:4a:d5:a4:f0"),
         (REPLY_MDP3500, "MDP-20000", "vrTf9Us8TeDaXYX9y8PBJ7", "24:ec:4a:d5:a4:f0"),
-        (REPLY_ECP, "Unknown (1d8c63eaccac4205b92c84d77d5a08fb)", None, None),
+        (REPLY_ECP, "ECP-150M", None, None),
     ],
 )
 def test_discovery_models_by_gizwits_key(data, model, device_id, mac):

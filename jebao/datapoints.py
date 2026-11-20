@@ -381,3 +381,179 @@ def _parse_hhmm(value) -> Tuple[int, int]:
         return value.hour, value.minute
     hour, _, minute = str(value).partition(":")
     return int(hour), int(minute[:2] or 0)
+
+
+# ---------------------------------------------------------------------- ECP-150M
+#
+# The ECP-150M wave pump (product key 1d8c63eaccac4205b92c84d77d5a08fb) has its own
+# published definition:
+# https://euapi.gizwits.com/app/datapoint?product_key=1d8c63eaccac4205b92c84d77d5a08fb
+# It has the same family of datapoints as the MDP pumps at different offsets. Its
+# values area is 401 bytes, read with a GizWits read (cmd 0x0093, action 0x02),
+# answered by cmd 0x0094, action 0x03 (checked on two pumps, see issue #5):
+#
+#     bytes 0-1     big-endian flag word, bits from the least significant:
+#                   0 SwitchON, 1 PulseTide, 2 FeedSwitch, 3 TimerON (Program),
+#                   4 AutoPulseTide, 5-6 Mode, 7-8 Linkage, 9-11 AutoMode
+#                   (bits 0, 2 and 3 match the MDP state byte)
+#     byte 2        Flow, percent
+#     byte 3        Frequency
+#     byte 4        FeedTime, minutes
+#     bytes 5-7     AutoFlow, AutoFrequency, AutoFeedTime (the current segment's)
+#     bytes 8-391   AutoTime00..AutoTime47, 8-byte program segments (0xEE unused)
+#     bytes 392-395 YMDData, bytes 396-399 HMSData (as on the MDP pumps)
+#     byte 400      fault bits, in the same order as FAULT_NAMES
+#
+# Read-only for now: nothing here encodes a write.
+
+PRODUCT_KEY_ECP150M = "1d8c63eaccac4205b92c84d77d5a08fb"
+
+ECP150M_VALUES_SIZE = 401
+ECP150M_SEGMENT_SIZE = 8
+ECP150M_SEGMENTS_OFFSET = 8
+ECP150M_YMD_OFFSET = 392
+ECP150M_HMS_OFFSET = 396
+ECP150M_FAULTS_OFFSET = 400
+ECP150M_UNUSED_SEGMENT = b"\xee" * ECP150M_SEGMENT_SIZE
+
+
+class WaveMode(IntEnum):
+    """ECP-150M wave mode (flag word bits 5-6)."""
+
+    CLASSIC = 0
+    SINE = 1
+    RANDOM = 2
+    CONSTANT = 3
+
+
+class Linkage(IntEnum):
+    """ECP-150M linkage role (flag word bits 7-8)."""
+
+    INDEPENDENT = 0
+    MASTER = 1
+    SLAVE = 2
+
+
+class WaveAutoMode(IntEnum):
+    """Mode of an ECP-150M program segment (flag word bits 9-11 for the current one)."""
+
+    STOP = 0
+    CLASSIC = 1
+    SINE = 2
+    RANDOM = 3
+    CONSTANT = 4
+    FEED = 5
+
+
+def _enum_or_none(enum, value: int):
+    return enum(value) if value in tuple(enum) else None
+
+
+@dataclass(frozen=True)
+class ECP150MSegment:
+    """One stored ECP-150M program segment (AutoTimeNN).
+
+    The definition only gives each segment as 8 binary bytes; what each byte means
+    comes from the captures. Unlike ScheduleSlot, a segment carries a wave mode,
+    flow and frequency, so it has its own type.
+    """
+
+    start_hour: int
+    start_minute: int
+    end_hour: int
+    end_minute: int
+    mode: int  # WaveAutoMode value; kept as int so unknown values survive
+    flow: int
+    frequency: int
+    flag: int  # meaning unknown
+
+    @property
+    def auto_mode(self) -> Optional[WaveAutoMode]:
+        """Segment mode, or None for a value outside the definition."""
+        return _enum_or_none(WaveAutoMode, self.mode)
+
+    @property
+    def start(self) -> str:
+        return f"{self.start_hour:02d}:{self.start_minute:02d}"
+
+    @property
+    def end(self) -> str:
+        return f"{self.end_hour:02d}:{self.end_minute:02d}"
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> Optional["ECP150MSegment"]:
+        """Decode a segment; None if it's unused (0xEE filler)."""
+        if len(data) != ECP150M_SEGMENT_SIZE or data == ECP150M_UNUSED_SEGMENT:
+            return None
+        return cls(*data)
+
+
+@dataclass(frozen=True)
+class ECP150MStatus:
+    """Decoded ECP-150M status (values area of a 0x0094 read reply)."""
+
+    flags: int
+    switch_on: bool
+    pulse_tide: bool
+    feed_switch: bool
+    timer_on: bool
+    auto_pulse_tide: bool
+    mode: WaveMode
+    linkage: Optional[Linkage]
+    auto_mode: Optional[WaveAutoMode]
+    flow: int
+    frequency: int
+    feed_time: int
+    auto_flow: int
+    auto_frequency: int
+    auto_feed_time: int
+    clock: Optional[datetime]
+    schedule: Tuple[Optional[ECP150MSegment], ...]
+    faults: Tuple[str, ...]
+    raw: bytes = field(repr=False, default=b"")
+
+    @property
+    def schedule_slots(self) -> List[ECP150MSegment]:
+        """The segments in use, in slot order."""
+        return [segment for segment in self.schedule if segment is not None]
+
+    @classmethod
+    def from_values(cls, values: bytes) -> "ECP150MStatus":
+        if len(values) < ECP150M_VALUES_SIZE:
+            raise ValueError(f"ECP-150M status values too short: {len(values)} bytes")
+
+        flags = int.from_bytes(values[0:2], "big")
+        fault_bits = values[ECP150M_FAULTS_OFFSET]
+        return cls(
+            flags=flags,
+            switch_on=bool(flags & 0x0001),
+            pulse_tide=bool(flags & 0x0002),
+            feed_switch=bool(flags & 0x0004),
+            timer_on=bool(flags & 0x0008),
+            auto_pulse_tide=bool(flags & 0x0010),
+            mode=WaveMode((flags >> 5) & 0x03),
+            linkage=_enum_or_none(Linkage, (flags >> 7) & 0x03),
+            auto_mode=_enum_or_none(WaveAutoMode, (flags >> 9) & 0x07),
+            flow=values[2],
+            frequency=values[3],
+            feed_time=values[4],
+            auto_flow=values[5],
+            auto_frequency=values[6],
+            auto_feed_time=values[7],
+            clock=decode_clock(
+                values[ECP150M_YMD_OFFSET : ECP150M_YMD_OFFSET + 4],
+                values[ECP150M_HMS_OFFSET : ECP150M_HMS_OFFSET + 4],
+            ),
+            schedule=tuple(
+                ECP150MSegment.from_bytes(values[offset : offset + ECP150M_SEGMENT_SIZE])
+                for offset in range(
+                    ECP150M_SEGMENTS_OFFSET,
+                    ECP150M_YMD_OFFSET,
+                    ECP150M_SEGMENT_SIZE,
+                )
+            ),
+            faults=tuple(
+                name for bit, name in enumerate(FAULT_NAMES) if fault_bits & (1 << bit)
+            ),
+            raw=bytes(values[:ECP150M_VALUES_SIZE]),
+        )

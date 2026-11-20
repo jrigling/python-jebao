@@ -9,8 +9,10 @@ import netifaces
 
 from .const import (
     DISCOVERY_TIMEOUT,
+    GIZWITS_KEY_ECP150M,
     GIZWITS_KEY_MD45,
     GIZWITS_KEYS_MDP20000,
+    MODEL_ECP150M,
     MODEL_MD44,
     MODEL_MD45,
     MODEL_MDP20000,
@@ -63,6 +65,11 @@ class DiscoveredDevice:
     def is_md45(self) -> bool:
         """Check if device is MD-4.5."""
         return self.model == MODEL_MD45
+
+    @property
+    def is_ecp150m(self) -> bool:
+        """Check if device is ECP-150M."""
+        return self.model == MODEL_ECP150M
 
 
 class JebaoDiscovery:
@@ -411,6 +418,8 @@ class JebaoDiscovery:
                     model = MODEL_MDP20000
                 elif gizwits_key == GIZWITS_KEY_MD45:
                     model = MODEL_MD45
+                elif gizwits_key == GIZWITS_KEY_ECP150M:
+                    model = MODEL_ECP150M
                 else:
                     _LOGGER.debug("Unknown product key %s at %s", gizwits_key, ip_address)
                     model = f"Unknown ({gizwits_key})"
