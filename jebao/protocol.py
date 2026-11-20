@@ -211,6 +211,29 @@ class JebaoProtocol:
         async with self._lock:
             return await self._run(_op, timeout)
 
+    async def request_datapoints(self, timeout: float = COMMAND_TIMEOUT) -> bytes:
+        """Read the datapoint block with a GizWits read (cmd 0x0093, action 0x02).
+
+        This is how the ECP-150M is read; it doesn't change anything on the pump.
+
+        Returns:
+            Payload of the 0x0094 reply: [sequence: 4 bytes][action 0x03][values]
+        """
+
+        async def _op(reader, writer):
+            sequence = self._next_sequence()
+            await self._send(
+                writer,
+                build_frame(
+                    MSG_CONTROL_OR_EXTENDED_REQUEST, sequence.to_bytes(4, "big") + b"\x02"
+                ),
+            )
+            return await self._read_until(reader, MSG_CONTROL_RESPONSE_OR_EXTENDED_DATA)
+
+        async with self._lock:
+            payload: bytes = await self._run(_op, timeout)
+            return payload
+
     async def send_control_command(
         self,
         opcode1: int,
