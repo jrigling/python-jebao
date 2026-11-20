@@ -61,6 +61,7 @@ from .const import (
     MSG_PASSCODE_RESPONSE,
     MSG_PONG,
 )
+from .datapoints import ATTR_FLAGS_SIZE, VALUES_SIZE, WRITABLE_SIZE, PumpStatus
 from .exceptions import (
     JebaoAuthenticationError,
     JebaoCommandError,
@@ -231,24 +232,7 @@ class JebaoProtocol:
         )
 
         async with self._lock:
-            session = None
-            last_err: Optional[Exception] = None
-            for attempt in range(2):
-                try:
-                    session = await asyncio.wait_for(self._open(timeout), timeout * 2)
-                    break
-                except asyncio.TimeoutError:
-                    last_err = JebaoTimeoutError(f"Connecting to {self.host} timed out")
-                except (JebaoConnectionError, JebaoTimeoutError, JebaoAuthenticationError) as err:
-                    last_err = err
-                if attempt == 0:
-                    await asyncio.sleep(0.5)
-            if session is None:
-                self._available = False
-                assert last_err is not None
-                raise last_err
-
-            reader, writer = session
+            reader, writer = await self._open_for_command(timeout)
             try:
                 await self._send(writer, command)
                 try:
@@ -267,11 +251,113 @@ class JebaoProtocol:
             finally:
                 await self._close(writer)
 
+    async def send_write(self, payload: bytes, timeout: float = COMMAND_TIMEOUT) -> Optional[bytes]:
+        """Send a GizWits datapoint write (cmd 0x0093, action 0x01).
+
+        Args:
+            payload: attribute flags + writable values, from ``datapoints.encode_write()``
+
+        Returns:
+            The status frame the pump pushed after applying the write (cmd 0x0091,
+            action 0x04), or None if none arrived. Feed it to ``parse_status``.
+
+        Like ``send_control_command``, opening the session is retried but the
+        write itself is sent at most once.
+
+        Raises:
+            JebaoCommandError: payload has the wrong size or sets nothing
+        """
+        if len(payload) != ATTR_FLAGS_SIZE + WRITABLE_SIZE:
+            # A short write makes the pump take whatever follows as data; an
+            # empty one has corrupted pump settings before.
+            raise JebaoCommandError(
+                f"Write payload must be {ATTR_FLAGS_SIZE + WRITABLE_SIZE} bytes"
+            )
+        if not any(payload[:ATTR_FLAGS_SIZE]):
+            raise JebaoCommandError("Write payload sets no datapoints")
+
+        async with self._lock:
+            sequence = self._next_sequence()
+            reader, writer = await self._open_for_command(timeout)
+            try:
+                await self._send(writer, self._build_write(sequence, payload))
+                status = await self._read_write_reply(reader, timeout)
+                self._available = True
+                return status
+            finally:
+                await self._close(writer)
+
+    async def _read_write_reply(self, reader, timeout: float) -> Optional[bytes]:
+        """Wait for a write's ACK (0x0094) and the status report the pump pushes.
+
+        They can arrive in either order. Once the ACK is in, the report gets
+        only a short extra window. A lost ACK is logged, not raised: the write
+        was delivered and is usually applied.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        acked = False
+        status: Optional[bytes] = None
+        for _ in range(16):
+            end = min(deadline, loop.time() + 1.0) if acked else deadline
+            remaining = end - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                frame = await asyncio.wait_for(self._read_frame(reader), remaining)
+                cmd, frame_payload = split_frame(frame)
+            except (asyncio.TimeoutError, JebaoConnectionError, JebaoCommandError):
+                break
+            if cmd == MSG_DATA_RESPONSE_SIMPLE:
+                status = frame
+            elif cmd == MSG_CONTROL_RESPONSE_OR_EXTENDED_DATA:
+                acked = True
+            if acked and status is not None:
+                break
+        if not acked:
+            _LOGGER.warning(
+                "%s Write sent but not acknowledged (the pump may still apply it)",
+                self.device_identifier,
+            )
+        return status
+
+    async def _open_for_command(self, timeout: float):
+        """Open a session for a command, retrying once. Caller holds the lock.
+
+        Retrying is always safe here: nothing has been sent to the pump yet.
+        """
+        last_err: Optional[Exception] = None
+        for attempt in range(2):
+            try:
+                return await asyncio.wait_for(self._open(timeout), timeout * 2)
+            except asyncio.TimeoutError:
+                last_err = JebaoTimeoutError(f"Connecting to {self.host} timed out")
+            except (JebaoConnectionError, JebaoTimeoutError, JebaoAuthenticationError) as err:
+                last_err = err
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+        self._available = False
+        assert last_err is not None
+        raise last_err
+
+    def _next_sequence(self) -> int:
+        sequence = self._sequence
+        self._sequence = (self._sequence + 1) & 0xFFFFFFFF or 1
+        return sequence
+
+    @staticmethod
+    def _build_write(sequence: int, payload: bytes) -> bytes:
+        """Write frame: [sequence: 4 bytes BE][action 0x01][attr flags][values]."""
+        return build_frame(
+            MSG_CONTROL_OR_EXTENDED_REQUEST, sequence.to_bytes(4, "big") + b"\x01" + payload
+        )
+
     @staticmethod
     def parse_status(data: bytes) -> Optional[dict]:
         """Parse a status frame (cmd 0x0091) into ``{"state", "speed"}``.
 
-        Payload layout: [action=0x03][state][speed]...
+        Payload layout: [action][state][speed]... The action is 0x03 for a
+        reply to our read and 0x04 for a report the pump pushes after a change.
         """
         try:
             cmd, payload = split_frame(data)
@@ -280,6 +366,20 @@ class JebaoProtocol:
         if cmd != MSG_DATA_RESPONSE_SIMPLE or len(payload) < 3:
             return None
         return {"state": payload[1], "speed": payload[2]}
+
+    @staticmethod
+    def parse_values(data: bytes) -> Optional[PumpStatus]:
+        """Decode every datapoint of a status frame (see ``datapoints.py``).
+
+        Returns None if ``data`` isn't a full status frame.
+        """
+        try:
+            cmd, payload = split_frame(data)
+        except JebaoCommandError:
+            return None
+        if cmd != MSG_DATA_RESPONSE_SIMPLE or len(payload) < 1 + VALUES_SIZE:
+            return None
+        return PumpStatus.from_values(payload[1 : 1 + VALUES_SIZE])
 
     # ---------------------------------------------------------------- internals
 
@@ -457,8 +557,7 @@ class JebaoProtocol:
         Payload: [seq: 4 bytes BE][0x01][7 zero bytes][op1][op2][p1][p2][zeros...]
         """
         payload = bytearray(CONTROL_COMMAND_SIZE - 9)  # 4 hdr + 2 varint + 3 flag/cmd
-        payload[0:4] = self._sequence.to_bytes(4, "big")
-        self._sequence = (self._sequence + 1) & 0xFFFFFFFF or 1
+        payload[0:4] = self._next_sequence().to_bytes(4, "big")
         payload[4] = 0x01
         payload[12] = opcode1
         payload[13] = opcode2
