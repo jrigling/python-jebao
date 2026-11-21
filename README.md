@@ -11,6 +11,7 @@ Python library for controlling Jebao aquarium pumps over local network.
   `MDP20000Device`.
 - **MD-4.4**: 4-channel dosing pump (planned)
 - **MD-4.5**: 5-channel WiFi/BLE dosing pump (per-channel on/off and status)
+- **ECP-150M**: wave pump (read-only status: mode, flow, frequency, program segments, clock, faults)
 
 ## Features
 
@@ -254,6 +255,7 @@ device.model          # Model name (e.g., "MDP-20000")
 device.is_mdp20000    # True if MDP-20000
 device.is_md44        # True if MD-4.4
 device.is_md45        # True if MD-4.5
+device.is_ecp150m     # True if ECP-150M
 ```
 
 ### MD45Device
@@ -268,6 +270,26 @@ await pump.turn_off_channel(1)
 await pump.update()               # the pump takes ~1 s to reflect a command
 pump.is_channel_on(1)             # bool
 pump.channel_states               # [bool] * 5 for channels 1-5
+```
+
+### ECP150MDevice
+
+Read-only for now: it sends GizWits reads and no commands.
+
+```python
+from jebao import ECP150MDevice
+
+pump = ECP150MDevice("192.168.1.100")
+await pump.connect()
+pump.state                        # DeviceState: ON, OFF, FEED or PROGRAM
+pump.speed                        # flow, percent
+status = pump.status              # ECP150MStatus
+status.mode                       # WaveMode: CLASSIC, SINE, RANDOM, CONSTANT
+status.frequency, status.feed_time
+status.linkage                    # Linkage: INDEPENDENT, MASTER, SLAVE
+status.schedule_slots             # [ECP150MSegment] in use
+status.clock                      # last time set from the app (doesn't tick)
+status.faults
 ```
 
 ## Home Assistant Integration
